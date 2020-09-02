@@ -1,0 +1,6 @@
+package pfsm-to-nim-gateway
+
+depends = contrib, pfsm
+main = Pfsm.NimGateway
+executable = pfsm-to-nim-gateway
+

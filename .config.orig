@@ -1,0 +1,1 @@
+BUILDDIR=/dev/shm/$(NAME-LINK)
