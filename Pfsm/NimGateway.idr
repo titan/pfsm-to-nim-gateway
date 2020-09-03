@@ -360,21 +360,21 @@ toNim fsm
       where
         generateParticipant : String -> String -> List State -> List Transition -> Participant -> String
         generateParticipant pre name ss ts p@(MkParticipant n _)
-          = let event_routers = nub $ flatten $ map (generateEventCallsByParticipantAndTransition indentDelta pre name p) ts
+          = let event_routers = nub $ flatten $ map (generateEventCallsByParticipantAndTransition indentDelta p) ts
                 state_routers = map (generateStateCall indentDelta pre name) ss in
                 join "\n" [ "const " ++ (toNimName n) ++ "_routers* = @["
                           , join ",\n" $ (state_routers ++ event_routers)
                           , "]"
                           ]
           where
-            generateEventCallsByParticipantAndTransition : Nat -> String -> String -> Participant -> Transition -> List String
-            generateEventCallsByParticipantAndTransition idt pre name p (MkTransition _ _ ts)
-              = filter nonblank $ map (generateEventCallByParticipantAndTrigger idt pre name p) ts
+            generateEventCallsByParticipantAndTransition : Nat -> Participant -> Transition -> List String
+            generateEventCallsByParticipantAndTransition idt p (MkTransition _ _ ts)
+              = filter nonblank $ map (generateEventCallByParticipantAndTrigger idt p) ts
               where
-                generateEventCallByParticipantAndTrigger : Nat -> String -> String -> Participant -> Trigger -> String
-                generateEventCallByParticipantAndTrigger idt pre name (MkParticipant pn _) (MkTrigger pr er _ _)
-                  = if pn == pr
-                       then (indent idt) ++ "RouteProc(" ++ (toNimName er) ++ ")"
+                generateEventCallByParticipantAndTrigger : Nat -> Participant -> Trigger -> String
+                generateEventCallByParticipantAndTrigger idt (MkParticipant pn _) (MkTrigger p e _ _)
+                  = if pn == (Participant.name p)
+                       then (indent idt) ++ "RouteProc(" ++ (toNimName (Event.name e)) ++ ")"
                        else ""
 
             generateStateCall : Nat -> String -> String -> State -> String
