@@ -372,8 +372,8 @@ toNim fsm
               = filter nonblank $ map (generateEventCallByParticipantAndTrigger idt p) ts
               where
                 generateEventCallByParticipantAndTrigger : Nat -> Participant -> Trigger -> String
-                generateEventCallByParticipantAndTrigger idt (MkParticipant pn _) (MkTrigger p e _ _)
-                  = if pn == (Participant.name p)
+                generateEventCallByParticipantAndTrigger idt p (MkTrigger ps e _ _)
+                  = if elemBy (==) p ps
                        then (indent idt) ++ "RouteProc(" ++ (toNimName (Event.name e)) ++ ")"
                        else ""
 
