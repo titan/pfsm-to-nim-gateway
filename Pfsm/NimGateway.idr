@@ -65,58 +65,6 @@ toNimName n
     normalize : Name -> String
     normalize n = foldl (\acc, x => replaceAll (fst x) (snd x) acc) n mappings
 
-toNimType : Tipe -> String
-toNimType TUnit          = "void"
-toNimType (TPrimType t)  = primToNimType t
-toNimType (TList t)      = "seq[" ++ (toNimType t) ++ "]"
-toNimType (TDict k v)    = "table[" ++ (primToNimType k) ++ "," ++ (toNimType v) ++ "]"
-toNimType (TRecord n ts) = toNimName n
-toNimType t@(TArrow a b) = case liftArrowParams t [] of
-                                []      => toNimFuncType []           TUnit
-                                x :: xs => toNimFuncType (reverse xs) x
-                        where
-                          liftArrowParams : Tipe -> List Tipe -> List Tipe
-                          liftArrowParams (TArrow a b@(TArrow _ _)) acc = liftArrowParams b (a :: acc)
-                          liftArrowParams (TArrow a b)              acc = b :: (a :: acc)
-                          liftArrowParams _                         acc = acc
-
-                          toNimFuncType : List Tipe -> Tipe -> String
-                          toNimFuncType as r
-                              = let args = join ", " (map (\(i, x) => "a" ++ (show i) ++ ": " ++ toNimType(x)) (enumerate as))
-                                    ret  = toNimType r in
-                                    "proc (" ++ args ++ "): " ++ ret
-
-toNimModelAttribute : String -> String
-toNimModelAttribute "@" = "model"
-toNimModelAttribute a
-  = if isPrefixOf "@" a
-       then "model." ++ toNimName (substr 1 (minus (length a) 1) a)
-       else toNimName a
-
-toNimExpression : String -> Expression -> String
-toNimExpression "fsm.guard_delegate" (ApplicationExpression n es) = "fsm.guard_delegate" ++ "." ++ (toNimName n) ++ "(" ++ (join ", " (map (toNimExpression "fsm.guard_delegate") ((IdentifyExpression "model") :: es))) ++ ")"
-toNimExpression caller (ApplicationExpression n es) = caller ++ "." ++ (toNimName n) ++ "(" ++ (join ", " (map (toNimExpression caller) es)) ++ ")"
-toNimExpression _      (BooleanExpression True)     = "true"
-toNimExpression _      (BooleanExpression False)    = "false"
-toNimExpression _      (IdentifyExpression i)       = toNimModelAttribute i
-toNimExpression _      (IntegerLiteralExpression i) = show i
-toNimExpression _      (RealLiteralExpression r)    = show r
-toNimExpression _      (StringLiteralExpression s)  = show s
-
-toNimCompareOperation : CompareOperation -> String
-toNimCompareOperation NotEqualsToOperation         = "!="
-toNimCompareOperation EqualsToOperation            = "=="
-toNimCompareOperation LessThanOperation            = "<"
-toNimCompareOperation LessThanOrEqualsToOperation  = "<="
-toNimCompareOperation GreatThanOperation           = ">"
-toNimCompareOperation GreatThanOrEqualsToOperation = ">="
-
-toNimTestExpression : TestExpression -> String
-toNimTestExpression (PrimitiveTestExpression e) = toNimExpression "fsm.guard_delegate" e
-toNimTestExpression (BinaryTestExpression op e1 e2) = (toNimTestExpression e1) ++ " " ++ (show op) ++ " " ++ (toNimTestExpression e2)
-toNimTestExpression (UnaryTestExpression op e) = (show op) ++ " " ++ (toNimTestExpression e)
-toNimTestExpression (CompareExpression op e1 e2) = (toNimExpression "fsm.guard_delegate" e1) ++ " " ++ (toNimCompareOperation op) ++ " " ++ (toNimExpression "fsm.guard_delegate" e2)
-
 toNim : Fsm -> String
 toNim fsm
   = let name = fsm.name
@@ -138,7 +86,7 @@ toNim fsm
 
     generateImports : String
     generateImports
-      = join "\n" [ "import asyncdispatch, httpbeauty, httpbeast, json, options, random, re, sequtils, strtabs, strutils, utility"
+      = join "\n" [ "import asyncdispatch, gateway_helper, httpbeauty, httpbeast, json, options, random, re, sequtils, strtabs, strutils"
                   , "import redis except `%`"
                   ]
 
@@ -151,11 +99,11 @@ toNim fsm
         generateEvent pre name fsmidcode (MkEvent n ps ms)
           = let ms' = fromMaybe [] ms
                 withoutId = isJust $ lookup "gateway.without-id" ms'
-                middleware = fromMaybe (MVString "") $ lookup "gateway.middleware" ms' in
-                join "\n" $ filter nonblank [ "proc " ++ (toNimName n) ++ "*(request: Request, tenant: uint64, queue_redis: AsyncRedis, cache_redis: AsyncRedis): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
+                middleware = fromMaybe (MVString "signature-security") $ lookup "gateway.middleware" ms' in
+                join "\n" $ filter nonblank [ "proc " ++ (toNimName n) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                             , if not withoutId then (indent indentDelta) ++ "var matches: array[1, string]" else ""
                                             , if not withoutId then (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/(.+)\\/" ++ n ++ "$\", matches):" else (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and request.path.get(\"\") == \"/" ++ name ++ "\""
-                                            , generateMiddleware (indentDelta * 2) fsmidcode n withoutId middleware ps
+                                            , generateMiddleware (indentDelta * 2) name fsmidcode n withoutId middleware ps
                                             , (indent indentDelta) ++ "else:"
                                             , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                                             ]
@@ -222,32 +170,35 @@ toNim fsm
                                             , (indent (idt + (indentDelta * 1))) ++ "fsmid = " ++ if not withoutId then "fromHex[BiggestUInt](id)" else fsmidcode
                                             , (indent (idt + (indentDelta * 1))) ++ "args = {"
                                             , (indent (idt + (indentDelta * 2))) ++ "\"TENANT\": $tenant,"
+                                            , (indent (idt + (indentDelta * 2))) ++ "\"GATEWAY\": ctx.gateway,"
                                             , (indent (idt + (indentDelta * 2))) ++ "\"TASK-TYPE\": \"PLAY-EVENT\","
                                             , (indent (idt + (indentDelta * 2))) ++ "\"FSMID\": $fsmid,"
                                             , (indent (idt + (indentDelta * 2))) ++ "\"EVENT\": " ++ (show (toUpper n)) ++ ","
                                             , (indent (idt + (indentDelta * 2))) ++ "\"CALLBACK\": callback,"
                                             , generateEventArguments (idt + (indentDelta * 2)) ps
                                             , (indent (idt + (indentDelta * 1))) ++ "}"
-                                            , (indent idt) ++ "discard await queue_redis.xadd(queue, @args)"
-                                            , (indent idt) ++ "result = await check_result(cache_redis, callback, 0)"
+                                            , (indent idt) ++ "discard await ctx.queue_redis.xadd(queue, @args)"
+                                            , (indent idt) ++ "result = await check_result(ctx.cache_redis, callback, 0)"
                                             ]
 
-            generateMiddleware : Nat -> String -> String -> Bool -> MetaValue -> List Parameter -> String
-            generateMiddleware idt fsmidcode n withoutId (MVString middleware) ps
+            generateMiddleware : Nat -> String -> String -> String -> Bool -> MetaValue -> List Parameter -> String
+            generateMiddleware idt name fsmidcode n withoutId (MVString middleware) ps
               = let codes = if middleware /= ""
                                then [ (indent idt) ++ "let"
+                                    , (indent (idt + (indentDelta * 1))) ++ "id = " ++ if not withoutId then "matches[0]" else ""
                                     , generateGetEventArguments (idt + indentDelta) ps
                                     , generateSignatureBody (idt + indentDelta) ps
-                                    , (indent idt) ++ "check_" ++ (toNimName middleware) ++ ":"
+                                    , (indent idt) ++ "check_" ++ (toNimName middleware) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if withoutId then [name, n] else [name, "$2", n])) ++ (if withoutId then "|$1\" % signbody):" else "|$1\" % [signbody, id]):")
                                     , generateMainBody (idt + indentDelta) fsmidcode n withoutId ps
                                     ]
                                else [ (indent idt) ++ "let"
+                                    , (indent (idt + (indentDelta * 1))) ++ "id = " ++ if not withoutId then "matches[0]" else ""
                                     , generateGetEventArguments (idt + indentDelta) ps
                                     , generateSignatureBody (idt + indentDelta) ps
                                     , generateMainBody idt fsmidcode n withoutId ps
                                     ] in
                     join "\n" $ filter nonblank codes
-            generateMiddleware idt fsmidcode n withoutId _ ps
+            generateMiddleware idt name fsmidcode n withoutId _ ps
               = generateMainBody idt fsmidcode n withoutId ps
 
     generateFetchLists : String -> String -> List State -> String
@@ -257,32 +208,35 @@ toNim fsm
         generateFetchList : String -> String -> State -> String
         generateFetchList pre name (MkState n _ _ _)
           = let nimname = toNimName name in
-                join "\n" $ filter nonblank [ "proc get_" ++ (toNimName n) ++ "_" ++ nimname ++ "_list*(request: Request, tenant: uint64, queue_redis: AsyncRedis, cache_redis: AsyncRedis): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
+                join "\n" $ filter nonblank [ "proc get_" ++ (toNimName n) ++ "_" ++ nimname ++ "_list*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                             , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/" ++ n ++ "\"):"
                                             , (indent (indentDelta * 2)) ++ "let"
-                                            , (indent (indentDelta * 3)) ++ "params = request.params"
-                                            , (indent (indentDelta * 3)) ++ "offset = parseInt(params.getOrDefault(\"offset\", \"0\"))"
-                                            , (indent (indentDelta * 3)) ++ "limit  = parseInt(params.getOrDefault(\"limit\", \"10\"))"
-                                            , (indent (indentDelta * 3)) ++ "srckey = \"tenant:\" & $tenant & \"#" ++ name ++ "." ++ n ++ "\""
-                                            , (indent (indentDelta * 3)) ++ "total  = await cache_redis.zcard(srckey)"
-                                            , (indent (indentDelta * 3)) ++ "ids  = await cache_redis.zrevrange(srckey, offset, offset + limit - 1)"
-                                            , (indent (indentDelta * 2)) ++ "var items = newJArray()"
-                                            , (indent (indentDelta * 2)) ++ "for id in ids:"
+                                            , (indent (indentDelta * 3)) ++ "params   = request.params"
+                                            , (indent (indentDelta * 3)) ++ "offset   = parseInt(params.getOrDefault(\"offset\", \"0\"))"
+                                            , (indent (indentDelta * 3)) ++ "limit    = parseInt(params.getOrDefault(\"limit\", \"10\"))"
+                                            , (indent (indentDelta * 3)) ++ "signbody = @[\"limit=\" & $limit, \"offset=\" & $offset].join(\"&\")"
+                                            , (indent (indentDelta * 2)) ++ "check_signature_security(request, ctx, \"GETT|/" ++ name ++ "/" ++ n ++ "|$1\" % signbody):"
                                             , (indent (indentDelta * 3)) ++ "let"
-                                            , (indent (indentDelta * 4)) ++ "key = " ++ "\"tenant:\" & $tenant & \"#" ++ name ++ ":\" & id"
-                                            , (indent (indentDelta * 4)) ++ "itemopt = await get_" ++ nimname ++ "_json(cache_redis, key)"
-                                            , (indent (indentDelta * 3)) ++ "if " ++ "itemopt.isSome:"
-                                            , (indent (indentDelta * 4)) ++ "var item = itemopt.get"
-                                            , (indent (indentDelta * 4)) ++ "item.add(\"fsmid\", %id)"
-                                            , (indent (indentDelta * 4)) ++ "items.add(item)"
-                                            , (indent (indentDelta * 2)) ++ "var pagination = newJObject()"
-                                            , (indent (indentDelta * 2)) ++ "pagination.add(\"total\", % total)"
-                                            , (indent (indentDelta * 2)) ++ "pagination.add(\"offset\", % offset)"
-                                            , (indent (indentDelta * 2)) ++ "pagination.add(\"limit\", % limit)"
-                                            , (indent (indentDelta * 2)) ++ "var ret = newJObject()"
-                                            , (indent (indentDelta * 2)) ++ "ret.add(\"pagination\", pagination)"
-                                            , (indent (indentDelta * 2)) ++ "ret.add(\"data\", items)"
-                                            , (indent (indentDelta * 2)) ++ "resp(ret)"
+                                            , (indent (indentDelta * 4)) ++ "srckey = \"tenant:\" & $tenant & \"#" ++ name ++ "." ++ n ++ "\""
+                                            , (indent (indentDelta * 4)) ++ "total  = await ctx.cache_redis.zcard(srckey)"
+                                            , (indent (indentDelta * 4)) ++ "ids  = await ctx.cache_redis.zrevrange(srckey, offset, offset + limit - 1)"
+                                            , (indent (indentDelta * 3)) ++ "var items = newJArray()"
+                                            , (indent (indentDelta * 3)) ++ "for id in ids:"
+                                            , (indent (indentDelta * 4)) ++ "let"
+                                            , (indent (indentDelta * 5)) ++ "key = " ++ "\"tenant:\" & $tenant & \"#" ++ name ++ ":\" & id"
+                                            , (indent (indentDelta * 5)) ++ "itemopt = await get_" ++ nimname ++ "_json(ctx.cache_redis, key)"
+                                            , (indent (indentDelta * 4)) ++ "if " ++ "itemopt.isSome:"
+                                            , (indent (indentDelta * 5)) ++ "var item = itemopt.get"
+                                            , (indent (indentDelta * 5)) ++ "item.add(\"fsmid\", %id)"
+                                            , (indent (indentDelta * 5)) ++ "items.add(item)"
+                                            , (indent (indentDelta * 3)) ++ "var pagination = newJObject()"
+                                            , (indent (indentDelta * 3)) ++ "pagination.add(\"total\", % total)"
+                                            , (indent (indentDelta * 3)) ++ "pagination.add(\"offset\", % offset)"
+                                            , (indent (indentDelta * 3)) ++ "pagination.add(\"limit\", % limit)"
+                                            , (indent (indentDelta * 3)) ++ "var ret = newJObject()"
+                                            , (indent (indentDelta * 3)) ++ "ret.add(\"pagination\", pagination)"
+                                            , (indent (indentDelta * 3)) ++ "ret.add(\"data\", items)"
+                                            , (indent (indentDelta * 3)) ++ "resp(ret)"
                                             , (indent indentDelta) ++ "else:"
                                             , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                                             ]
