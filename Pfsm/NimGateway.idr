@@ -65,6 +65,27 @@ toNimName n
     normalize : Name -> String
     normalize n = foldl (\acc, x => replaceAll (fst x) (snd x) acc) n mappings
 
+toNimType : Tipe -> String
+toNimType TUnit          = "void"
+toNimType (TPrimType t)  = primToNimType t
+toNimType (TList t)      = "seq[" ++ (toNimType t) ++ "]"
+toNimType (TDict k v)    = "table[" ++ (primToNimType k) ++ "," ++ (toNimType v) ++ "]"
+toNimType (TRecord n ts) = toNimName n
+toNimType t@(TArrow a b) = case liftArrowParams t [] of
+                                []      => toNimFuncType []           TUnit
+                                x :: xs => toNimFuncType (reverse xs) x
+                        where
+                          liftArrowParams : Tipe -> List Tipe -> List Tipe
+                          liftArrowParams (TArrow a b@(TArrow _ _)) acc = liftArrowParams b (a :: acc)
+                          liftArrowParams (TArrow a b)              acc = b :: (a :: acc)
+                          liftArrowParams _                         acc = acc
+
+                          toNimFuncType : List Tipe -> Tipe -> String
+                          toNimFuncType as r
+                              = let args = join ", " (map (\(i, x) => "a" ++ (show i) ++ ": " ++ toNimType(x)) (enumerate as))
+                                    ret  = toNimType r in
+                                    "proc (" ++ args ++ "): " ++ ret
+
 toNim : Fsm -> String
 toNim fsm
   = let name = fsm.name
@@ -244,7 +265,7 @@ toNim fsm
     generateGetJsonCall : String -> String -> List Parameter -> String
     generateGetJsonCall pre name ps
       = let nimname = toNimName name in
-            join "\n" [ "proc get_" ++ nimname ++ "_json(redis: AsyncRedis, key: string): Future[Option[JsonNode]] {.async.} ="
+            join "\n" [ "proc get_" ++ nimname ++ "_json*(redis: AsyncRedis, key: string): Future[Option[JsonNode]] {.async.} ="
                       , (indent indentDelta) ++ "let"
                       , (indent (indentDelta * 2)) ++ "fields = @[" ++ (join ", " (map (\(n, _, _) => (show . toUpper) n) ps)) ++ "]"
                       , (indent (indentDelta * 2)) ++ "values = await redis.hmget(key, fields)"
@@ -283,8 +304,18 @@ toNim fsm
             typeWrapper s (TPrimType PTReal)   = s ++ ".parseFloat"
             typeWrapper s (TPrimType PTChar)   = "if len(" ++ s ++ ") > 0: " ++ s ++ "[0] else: '\\0'"
             typeWrapper s (TPrimType PTString) = s
-            typeWrapper s (TList t)            = s ++ ".parseList.mapIt(" ++ (typeWrapper "it" t) ++ ")"
-            typeWrapper s (TDict PTString t)   = s ++ ".parseDict.mapIt((it[0], " ++ (typeWrapper "it[1]" t) ++ "))"
+            typeWrapper s (TList t)            = "parseList[" ++ (toNimType t) ++ "](" ++ s ++ ")"
+            typeWrapper s (TDict PTBool t)     = "parseDict[bool, " ++ (toNimType t) ++ "](" ++ s ++ ")"
+            typeWrapper s (TDict PTByte t)     = "parseDict[uint8, " ++ (toNimType t) ++ "](" ++ s ++ ")"
+            typeWrapper s (TDict PTShort t)    = "parseDict[int16, " ++ (toNimType t) ++ "](" ++ s ++ ")"
+            typeWrapper s (TDict PTUShort t)   = "parseDict[uint16, " ++ (toNimType t) ++ "](" ++ s ++ ")"
+            typeWrapper s (TDict PTInt t)      = "parseDict[int, " ++ (toNimType t) ++ "](" ++ s ++ ")"
+            typeWrapper s (TDict PTUInt t)     = "parseDict[uint, " ++ (toNimType t) ++ "](" ++ s ++ ")"
+            typeWrapper s (TDict PTLong t)     = "parseDict[int64, " ++ (toNimType t) ++ "](" ++ s ++ ")"
+            typeWrapper s (TDict PTULong t)    = "parseDict[uint64," ++ (toNimType t) ++ "](" ++ s ++ ")"
+            typeWrapper s (TDict PTReal t)     = "parseDict[float64," ++ (toNimType t) ++ "](" ++ s ++ ")"
+            typeWrapper s (TDict PTChar t)     = "parseDict[char," ++ (toNimType t) ++ "](" ++ s ++ ")"
+            typeWrapper s (TDict PTString t)   = "parseDict[string, " ++ (toNimType t) ++ "](" ++ s ++ ")"
             typeWrapper s _                    = s
 
         generateDefaultGetJsonHandler : Nat -> Name -> Tipe -> String
