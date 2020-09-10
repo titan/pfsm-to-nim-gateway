@@ -1,6 +1,6 @@
 package pfsm-to-nim-gateway
 
 depends = contrib, pfsm
-main = Pfsm.NimGateway
+main = NimGateway
 executable = pfsm-to-nim-gateway
 

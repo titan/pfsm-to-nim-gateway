@@ -4,7 +4,7 @@ NAME-LINK=$(subst _,-,$(NAME))
 include .config
 ESCAPED-BUILDDIR = $(shell echo '$(BUILDDIR)' | sed 's%/%\\/%g')
 TARGET=$(BUILDDIR)/build/exec/$(NAME-LINK)
-PKGPREFIX=Pfsm
+PKGPREFIX=.
 SRCS=$(wildcard $(PKGPREFIX)/*.idr)
 DSTSRCS=$(addprefix $(BUILDDIR)/$(PKGPREFIX)/, $(notdir $(SRCS)))
 PRJCONF=$(NAME-LINK).ipkg

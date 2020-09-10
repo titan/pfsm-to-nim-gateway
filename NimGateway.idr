@@ -1,4 +1,4 @@
-module Pfsm.NimGateway
+module NimGateway
 
 import Data.Maybe
 import Data.List
@@ -12,6 +12,7 @@ import Pfsm.Analyser
 import Pfsm.Checker
 import Pfsm.Data
 import Pfsm.Parser
+import Pfsm.Nim
 
 indentDelta : Nat
 indentDelta = 2
@@ -28,63 +29,6 @@ lookup k ms
     lookup' k (m@(MkMeta k' v) :: ms) acc = if k == k'
                                                then Just v
                                                else lookup' k ms acc
-
-nimBuiltinTypes : List String
-nimBuiltinTypes = [ "int" , "int8" , "int16" , "int32" , "int64" , "uint" , "uint8" , "uint16" , "uint32" , "uint64" , "float" , "floa t32" , "float64" , "true" , "false" , "char" , "string" , "cstring" ]
-
-nimKeywords : List String
-nimKeywords = [ "addr" , "and" , "as" , "asm" , "bind" , "block" , "break" , "case" , "cast" , "concept" , "const" , "continue" , "converter" , "defer" , "discard" , "distinct" , "div" , "do" , "elif" , "else" , "end" , "enum" , "except" , "export" , "finally" , "for" , "from" , "func" , "if" , "import" , "in" , "include" , "interface" , "is" , "isnot" , "iterator" , "let" , "macro" , "method" , "mixin" , "mod" , "nil" , "not" , "notin" , "object" , "of" , "or" , "out" , "proc" , "ptr" , "raise" , "ref" , "return" , "shl" , "shr" , "static" , "template" , "try" , "tuple" , "type" , "using" , "var" , "when" , "while" , "xor" , "yield" ]
-
-primToNimType : PrimType -> String
-primToNimType t
-  = case t of
-         PTBool   => "bool"
-         PTByte   => "uint8"
-         PTChar   => "char"
-         PTShort  => "int16"
-         PTUShort => "uint16"
-         PTInt    => "int"
-         PTUInt   => "uint"
-         PTLong   => "int64"
-         PTULong  => "uint64"
-         PTReal   => "float64"
-         PTString => "string"
-
-toNimName : Name -> String
-toNimName n
-  = let n' = normalize n in
-    if elemBy (==) n' nimKeywords
-       then "my_" ++ n'
-       else n'
-  where
-    mappings : List (String, String)
-    mappings =  [ (" ", "_")
-                , ("-", "_")
-                , ("+", "plus")
-                ]
-    normalize : Name -> String
-    normalize n = foldl (\acc, x => replaceAll (fst x) (snd x) acc) n mappings
-
-toNimType : Tipe -> String
-toNimType TUnit          = "void"
-toNimType (TPrimType t)  = primToNimType t
-toNimType (TList t)      = "seq[" ++ (toNimType t) ++ "]"
-toNimType (TDict k v)    = "table[" ++ (primToNimType k) ++ "," ++ (toNimType v) ++ "]"
-toNimType (TRecord n ts) = toNimName n
-toNimType t@(TArrow a b) = case liftArrowParams t [] of
-                                []      => toNimFuncType []           TUnit
-                                x :: xs => toNimFuncType (reverse xs) x
-                        where
-                          liftArrowParams : Tipe -> List Tipe -> List Tipe
-                          liftArrowParams (TArrow a b@(TArrow _ _)) acc = liftArrowParams b (a :: acc)
-                          liftArrowParams (TArrow a b)              acc = b :: (a :: acc)
-                          liftArrowParams _                         acc = acc
-
-                          toNimFuncType : List Tipe -> Tipe -> String
-                          toNimFuncType as r
-                              = let args = join ", " (map (\(i, x) => "a" ++ (show i) ++ ": " ++ toNimType(x)) (enumerate as))
-                                    ret  = toNimType r in
-                                    "proc (" ++ args ++ "): " ++ ret
 
 toNim : Fsm -> String
 toNim fsm
