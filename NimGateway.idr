@@ -17,25 +17,13 @@ import Pfsm.Nim
 indentDelta : Nat
 indentDelta = 2
 
-nonblank : String -> Bool
-nonblank s = length s > Z
-
-lookup : MetaKey -> List Meta -> Maybe MetaValue
-lookup k ms
-  = lookup' k ms Nothing
-  where
-    lookup' : MetaKey -> List Meta -> Maybe MetaValue -> Maybe MetaValue
-    lookup' k []                      acc = acc
-    lookup' k (m@(MkMeta k' v) :: ms) acc = if k == k'
-                                               then Just v
-                                               else lookup' k ms acc
-
 toNim : Fsm -> String
 toNim fsm
   = let name = fsm.name
         pre = camelize (toNimName name)
-        idfields = (filter idFieldFilter fsm.model) in
-        join "\n\n" [ generateImports
+        idfields = filter idFieldFilter fsm.model
+        refereds = referenced fsm.model in
+        join "\n\n" [ generateImports refereds
                     , "const queue = " ++ (show (name ++ "-input"))
                     , generateEventCalls pre name idfields fsm.events
                     , generateGetJsonCall pre name fsm.model
@@ -44,15 +32,25 @@ toNim fsm
                     ]
   where
     idFieldFilter : Parameter -> Bool
-    idFieldFilter (_, _, Nothing) = False
-    idFieldFilter (_, _, Just ms) = case lookup "fsmid" ms of
-                                         Just (MVString "true") => True
-                                         _ => False
+    idFieldFilter (_, _, ms) = case lookup "fsmid" ms of
+                                    Just (MVString "true") => True
+                                    _ => False
 
-    generateImports : String
-    generateImports
+    referenced: List Parameter -> List Name
+    referenced ps
+      = referenced' ps []
+      where
+        referenced' : List Parameter -> List Name -> List Name
+        referenced' []                 acc = acc
+        referenced' ((_, _, ms) :: xs) acc = case lookup "reference" ms of
+                                                  Just (MVString dst) => referenced' xs (dst :: acc)
+                                                  _ => referenced' xs acc
+
+    generateImports : List Name -> String
+    generateImports refereds
       = join "\n" [ "import asyncdispatch, gateway_helper, httpbeauty, httpbeast, json, options, random, re, sequtils, strtabs, strutils"
                   , "import redis except `%`"
+                  , join "\n" $ map (\x => "import " ++ (toNimName x)) refereds
                   ]
 
     generateEventCalls : String -> String -> List Parameter -> List Event -> String
@@ -62,39 +60,27 @@ toNim fsm
       where
         generateEvent : String -> String -> String -> Event -> String
         generateEvent pre name fsmidcode (MkEvent n ps ms)
-          = let ms' = fromMaybe [] ms
-                withoutId = isJust $ lookup "gateway.without-id" ms'
-                middleware = fromMaybe (MVString "signature-security") $ lookup "gateway.middleware" ms' in
+          = let withoutId = isJust $ lookup "gateway.without-id" ms
+                middleware = fromMaybe (MVString "signature-security") $ lookup "gateway.middleware" ms in
                 join "\n" $ filter nonblank [ "proc " ++ (toNimName n) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                             , if not withoutId then (indent indentDelta) ++ "var matches: array[1, string]" else ""
-                                            , if not withoutId then (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/(.+)\\/" ++ n ++ "$\", matches):" else (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and request.path.get(\"\") == \"/" ++ name ++ "\""
+                                            , if not withoutId then (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/(.+)\\/" ++ n ++ "$\", matches):" else (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and request.path.get(\"\") == \"/" ++ name ++ "\":"
                                             , generateMiddleware (indentDelta * 2) name fsmidcode n withoutId middleware ps
                                             , (indent indentDelta) ++ "else:"
                                             , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                                             ]
 
           where
-            typeWrapper : String -> Tipe -> String
-            typeWrapper s (TPrimType PTBool)   = s ++ "getBool"
-            typeWrapper s (TPrimType PTByte)   = "cast[uint8](" ++ s ++ ".getInt)"
-            typeWrapper s (TPrimType PTShort)  = "cast[int16](" ++ s ++ ".getInt)"
-            typeWrapper s (TPrimType PTUShort) = "cast[uint16](" ++ s ++ ".getInt)"
-            typeWrapper s (TPrimType PTInt)    = s ++ ".getInt"
-            typeWrapper s (TPrimType PTUInt)   = "cast[uint](" ++ s ++ ".getInt)"
-            typeWrapper s (TPrimType PTLong)   = s ++ ".getBiggestInt"
-            typeWrapper s (TPrimType PTULong)  = "cast[uint64](" ++ s ++ ".getBiggestInt)"
-            typeWrapper s (TPrimType PTReal)   = s ++ ".getFloat"
-            typeWrapper s (TPrimType PTChar)   = "if len(" ++ s ++ ".getStr) > 0: " ++ s ++ ".getStr()[0] else: '\\0'"
-            typeWrapper s (TPrimType PTString) = s ++ ".getStr"
-            typeWrapper s (TList t)            = s ++ ".getElems.mapIt(" ++ (typeWrapper "it" t) ++ ")"
-            typeWrapper s (TDict PTString t)   = s ++ ".getFields.mapIt((it[0], " ++ (typeWrapper "it[1]" t) ++ "))"
-            typeWrapper s _                    = s
-
             generateGetEventArgument : Nat -> Parameter -> String
-            generateGetEventArgument idt (n, t, _)
-              = let lhs = (indent idt) ++ (toNimName n)
-                    rhs = typeWrapper ("data{" ++ (show n) ++ "}") t in
-                    lhs ++ " = " ++ rhs
+            generateGetEventArgument idt (n, (TList t), _)   = let lhs = (indent idt) ++ (toNimName n)
+                                                                   rhs = "data{\"" ++ n ++ "\"}" in
+                                                                   lhs ++ " = " ++ rhs
+            generateGetEventArgument idt (n, (TDict k v), _) = let lhs = (indent idt) ++ (toNimName n)
+                                                                   rhs = "data{\"" ++ n ++ "\"}" in
+                                                                   lhs ++ " = " ++ rhs
+            generateGetEventArgument idt (n, t, _)           = let lhs = (indent idt) ++ (toNimName n)
+                                                                   rhs = toNimFromJson ("data{\"" ++ n ++ "\"}") t in
+                                                                   lhs ++ " = " ++ rhs
 
             generateGetEventArguments : Nat -> List Parameter -> String
             generateGetEventArguments idt [] = ""
@@ -103,11 +89,11 @@ toNim fsm
                                                          ]
 
             toNimArg : Name -> Tipe -> String
-            toNimArg n (TPrimType PTString) = n
-            toNimArg n (TPrimType _) = "$" ++ n
-            toNimArg n (TList t) = "\"[\" & " ++ n ++ ".mapIt(" ++ (toNimArg "it" t) ++ ").join(\",\") & \"]\""
-            toNimArg n (TDict k v) = "\"[\" & dictpair.mapIt(\"(\" & " ++ (toNimArg "it[0]" (TPrimType k)) ++ " & \",\" & " ++ (toNimArg "it[1]" v) ++ " & \")\") & \"]\""
-            toNimArg n _ = n
+            toNimArg n (TPrimType PTString) = toNimName n
+            toNimArg n (TPrimType _)        = "$" ++ (toNimName n)
+            toNimArg n (TList t)            = "$" ++ (toNimName n)
+            toNimArg n (TDict k v)          = "$" ++ (toNimName n)
+            toNimArg n _                    = toNimName n
 
             generateEventArgument : Nat -> Parameter -> String
             generateEventArgument idt (n, t, _)
@@ -126,7 +112,9 @@ toNim fsm
               where
                 generateSignatureBody' : Parameter -> String
                 generateSignatureBody' (n, (TPrimType PTString), _) = "\"" ++ n ++ "=\" & " ++ (toNimName n)
-                generateSignatureBody' (n, _,                    _) = "\"" ++ n ++ "=\" & $" ++ (toNimName n)
+                generateSignatureBody' (n, (TList _), _)            = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
+                generateSignatureBody' (n, (TDict _ _), _)          = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
+                generateSignatureBody' (n, _,                    _) = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
 
             generateMainBody : Nat -> String -> String -> Bool -> List Parameter -> String
             generateMainBody idt fsmidcode n withoutId ps
@@ -150,7 +138,7 @@ toNim fsm
             generateMiddleware idt name fsmidcode n withoutId (MVString middleware) ps
               = let codes = if middleware /= ""
                                then [ (indent idt) ++ "let"
-                                    , (indent (idt + (indentDelta * 1))) ++ "id = " ++ if not withoutId then "matches[0]" else ""
+                                    , if not withoutId then (indent (idt + (indentDelta * 1))) ++ "id = " ++ "matches[0]" else ""
                                     , generateGetEventArguments (idt + indentDelta) ps
                                     , generateSignatureBody (idt + indentDelta) ps
                                     , (indent idt) ++ "check_" ++ (toNimName middleware) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if withoutId then [name, n] else [name, "$2", n])) ++ (if withoutId then "|$1\" % signbody):" else "|$1\" % [signbody, id]):")
@@ -180,7 +168,7 @@ toNim fsm
                                             , (indent (indentDelta * 3)) ++ "offset   = parseInt(params.getOrDefault(\"offset\", \"0\"))"
                                             , (indent (indentDelta * 3)) ++ "limit    = parseInt(params.getOrDefault(\"limit\", \"10\"))"
                                             , (indent (indentDelta * 3)) ++ "signbody = @[\"limit=\" & $limit, \"offset=\" & $offset].join(\"&\")"
-                                            , (indent (indentDelta * 2)) ++ "check_signature_security(request, ctx, \"GETT|/" ++ name ++ "/" ++ n ++ "|$1\" % signbody):"
+                                            , (indent (indentDelta * 2)) ++ "check_signature_security(request, ctx, \"GET|/" ++ name ++ "/" ++ n ++ "|$1\" % signbody):"
                                             , (indent (indentDelta * 3)) ++ "let"
                                             , (indent (indentDelta * 4)) ++ "srckey = \"tenant:\" & $tenant & \"#" ++ name ++ "." ++ n ++ "\""
                                             , (indent (indentDelta * 4)) ++ "total  = await ctx.cache_redis.zcard(srckey)"
@@ -189,7 +177,7 @@ toNim fsm
                                             , (indent (indentDelta * 3)) ++ "for id in ids:"
                                             , (indent (indentDelta * 4)) ++ "let"
                                             , (indent (indentDelta * 5)) ++ "key = " ++ "\"tenant:\" & $tenant & \"#" ++ name ++ ":\" & id"
-                                            , (indent (indentDelta * 5)) ++ "itemopt = await get_" ++ nimname ++ "_json(ctx.cache_redis, key)"
+                                            , (indent (indentDelta * 5)) ++ "itemopt = await get_" ++ nimname ++ "_json(ctx.cache_redis, tenant, key)"
                                             , (indent (indentDelta * 4)) ++ "if " ++ "itemopt.isSome:"
                                             , (indent (indentDelta * 5)) ++ "var item = itemopt.get"
                                             , (indent (indentDelta * 5)) ++ "item.add(\"fsmid\", %id)"
@@ -208,80 +196,90 @@ toNim fsm
 
     generateGetJsonCall : String -> String -> List Parameter -> String
     generateGetJsonCall pre name ps
-      = let nimname = toNimName name in
-            join "\n" [ "proc get_" ++ nimname ++ "_json*(redis: AsyncRedis, key: string): Future[Option[JsonNode]] {.async.} ="
-                      , (indent indentDelta) ++ "let"
-                      , (indent (indentDelta * 2)) ++ "fields = @[" ++ (join ", " (map (\(n, _, _) => (show . toUpper) n) ps)) ++ "]"
-                      , (indent (indentDelta * 2)) ++ "values = await redis.hmget(key, fields)"
-                      , (indent indentDelta) ++ "var"
-                      , (indent (indentDelta * 2)) ++ "payload = newJObject()"
-                      , (indent (indentDelta * 2)) ++ "nilcount = 0"
-                      , (indent (indentDelta * 2)) ++ "idx = 0"
-                      , (indent indentDelta) ++ "for val in values:"
-                      , (indent (indentDelta * 2)) ++ "if val.isSome:"
-                      , (indent (indentDelta * 3)) ++ "case fields[idx]:"
-                      , join "\n" $ map (\(n, t, _) => generateGetJsonHandler (indentDelta * 4) n t) ps
-                      , (indent (indentDelta * 4)) ++ "else:"
-                      , (indent (indentDelta * 5)) ++ "payload.add(fields[idx].toLowerAscii, % val.get)"
-                      , (indent (indentDelta * 2)) ++ "else:"
-                      , (indent (indentDelta * 3)) ++ "case fields[idx]:"
-                      , join "\n" $ map (\(n, t, _) => generateDefaultGetJsonHandler (indentDelta * 4) n t) ps
-                      , (indent (indentDelta * 4)) ++ "else:"
-                      , (indent (indentDelta * 5)) ++ "payload.add(fields[idx].toLowerAscii, % \"\")"
-                      ]
+      = let nimname = toNimName name
+            (norms, refs) = splitParameters ps in
+            join "\n" $ filter nonblank [ "proc get_" ++ nimname ++ "_json*(redis: AsyncRedis, tenant: uint64, key: string): Future[Option[JsonNode]] {.async.} ="
+                                        , (indent indentDelta) ++ "let"
+                                        , (indent (indentDelta * 2)) ++ "fields = @[" ++ (join ", " (map (\(n, _, _) => (show . toUpper) n) ps)) ++ "]"
+                                        , (indent (indentDelta * 2)) ++ "values = await redis.hmget(key, fields)"
+                                        , (indent indentDelta) ++ "var"
+                                        , (indent (indentDelta * 2)) ++ "payload = newJObject()"
+                                        , (indent (indentDelta * 2)) ++ "nilcount = 0"
+                                        , (indent (indentDelta * 2)) ++ "idx = 0"
+                                        , (indent indentDelta) ++ "for val in values:"
+                                        , (indent (indentDelta * 2)) ++ "if val.isSome:"
+                                        , (indent (indentDelta * 3)) ++ "case fields[idx]:"
+                                        , join "\n" $ map (\(n, t, _) => generateGetJsonHandler (indentDelta * 4) n t) norms
+                                        , join "\n" $ map (\(n, t, _) => generateGetReferenceJsonHandler (indentDelta * 4) n t) refs
+                                        , (indent (indentDelta * 4)) ++ "else:"
+                                        , (indent (indentDelta * 5)) ++ "payload.add(fields[idx].toLowerAscii, % val.get)"
+                                        , (indent (indentDelta * 2)) ++ "else:"
+                                        , (indent (indentDelta * 3)) ++ "case fields[idx]:"
+                                        , join "\n" $ map (\(n, t, _) => generateDefaultGetJsonHandler (indentDelta * 4) n t) ps
+                                        , (indent (indentDelta * 4)) ++ "else:"
+                                        , (indent (indentDelta * 5)) ++ "payload.add(fields[idx].toLowerAscii, % \"\")"
+                                        , (indent indentDelta) ++ "result = some(payload)"
+                                        ]
       where
-        generateGetJsonHandler : Nat -> Name -> Tipe -> String
-        generateGetJsonHandler idt n t
-          = join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
-                      , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, % " ++ (typeWrapper "val.get" t) ++ ")"
-                      ]
+        splitParameters : List Parameter -> (List Parameter, List Parameter)
+        splitParameters ps
+          = splitParameters' ps [] []
           where
-            typeWrapper : String -> Tipe -> String
-            typeWrapper s (TPrimType PTBool)   = s ++ ".parseBool"
-            typeWrapper s (TPrimType PTByte)   = "cast[uint8](" ++ s ++ ".parseInt)"
-            typeWrapper s (TPrimType PTShort)  = "cast[int16](" ++ s ++ ".parseInt)"
-            typeWrapper s (TPrimType PTUShort) = "cast[uint16](" ++ s ++ ".parseUInt)"
-            typeWrapper s (TPrimType PTInt)    = s ++ ".parseInt"
-            typeWrapper s (TPrimType PTUInt)   = s ++ ".parseUInt"
-            typeWrapper s (TPrimType PTLong)   = s ++ ".parseBiggestInt"
-            typeWrapper s (TPrimType PTULong)  = s ++ ".parseBiggestUInt"
-            typeWrapper s (TPrimType PTReal)   = s ++ ".parseFloat"
-            typeWrapper s (TPrimType PTChar)   = "if len(" ++ s ++ ") > 0: " ++ s ++ "[0] else: '\\0'"
-            typeWrapper s (TPrimType PTString) = s
-            typeWrapper s (TList t)            = "parseList[" ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s (TDict PTBool t)     = "parseDict[bool, " ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s (TDict PTByte t)     = "parseDict[uint8, " ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s (TDict PTShort t)    = "parseDict[int16, " ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s (TDict PTUShort t)   = "parseDict[uint16, " ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s (TDict PTInt t)      = "parseDict[int, " ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s (TDict PTUInt t)     = "parseDict[uint, " ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s (TDict PTLong t)     = "parseDict[int64, " ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s (TDict PTULong t)    = "parseDict[uint64," ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s (TDict PTReal t)     = "parseDict[float64," ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s (TDict PTChar t)     = "parseDict[char," ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s (TDict PTString t)   = "parseDict[string, " ++ (toNimType t) ++ "](" ++ s ++ ")"
-            typeWrapper s _                    = s
+            splitParameters' : List Parameter -> List Parameter -> List Parameter -> (List Parameter, List Parameter)
+            splitParameters' []                   acc1 acc2 = (acc1, acc2)
+            splitParameters' (p@(_, _, ms) :: xs) acc1 acc2 = if isJust (lookup "reference" ms)
+                                                                 then splitParameters' xs acc1 (p :: acc2)
+                                                                 else splitParameters' xs (p :: acc1) acc2
+
+        generateGetJsonHandler : Nat -> Name -> Tipe -> String
+        generateGetJsonHandler idt n (TList _)   = join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                                                             , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, val.get.parseJson)"
+                                                             ]
+        generateGetJsonHandler idt n (TDict _ _) = join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                                                             , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, val.get.parseJson)"
+                                                             ]
+        generateGetJsonHandler idt n t           = join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                                                             , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, % " ++ (toNimFromString "val.get" t) ++ ")"
+                                                             ]
+
+        generateGetReferenceJsonHandler : Nat -> Name -> Tipe -> String
+        generateGetReferenceJsonHandler idt n _
+          = join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                      , (indent (idt + indentDelta)) ++ "let"
+                      , (indent (idt + indentDelta * 2)) ++ "key = \"tenant:\" & $tenant & \"#" ++ n ++ ":\" & val.get(\"0\")"
+                      , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_opt" ++ " = await get_" ++ (toNimName n) ++ "_json(redis, tenant, key)"
+                      , (indent (idt + indentDelta)) ++ "if " ++ (toNimName n) ++ "_opt.isSome:"
+                      , (indent (idt + indentDelta * 2)) ++ "let " ++ (toNimName n) ++ " = " ++ (toNimName n) ++ "_opt.get"
+                      , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ ".add(\"fsmid\", % val.get)"
+                      , (indent (idt + indentDelta * 2)) ++ "payload.add(fields[idx].toLowerAscii, " ++ (toNimName n) ++ ")"
+                      , (indent (idt + indentDelta)) ++ "else:"
+                      , (indent (idt + indentDelta * 2)) ++ "payload.add(fields[idx].toLowerAscii, % val.get)"
+                      ]
+
+        defaultValue : Tipe -> String
+        defaultValue (TPrimType PTBool)   = "false"
+        defaultValue (TPrimType PTByte)   = "0'u8"
+        defaultValue (TPrimType PTChar)   = "'\\0'"
+        defaultValue (TPrimType PTShort)  = "0'i16"
+        defaultValue (TPrimType PTUShort) = "0'u16"
+        defaultValue (TPrimType PTInt)    = "0"
+        defaultValue (TPrimType PTUInt)   = "0'u32"
+        defaultValue (TPrimType PTLong)   = "0'i64"
+        defaultValue (TPrimType PTULong)  = "0'u64"
+        defaultValue (TPrimType PTReal)   = "0.0"
+        defaultValue (TPrimType PTString) = "\"\""
+        defaultValue (TList _)            = "@[]"
+        defaultValue _                    = "nil"
 
         generateDefaultGetJsonHandler : Nat -> Name -> Tipe -> String
+        generateDefaultGetJsonHandler idt n t@(TDict _ _)
+          = join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                      , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, json.`%` " ++ (defaultValue t) ++ ")"
+                      ]
         generateDefaultGetJsonHandler idt n t
           = join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
                       , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, % " ++ (defaultValue t) ++ ")"
                       ]
-          where
-            defaultValue : Tipe -> String
-            defaultValue (TPrimType PTBool)   = "false"
-            defaultValue (TPrimType PTByte)   = "0'u8"
-            defaultValue (TPrimType PTChar)   = "'\\0'"
-            defaultValue (TPrimType PTShort)  = "0'i16"
-            defaultValue (TPrimType PTUShort) = "0'u16"
-            defaultValue (TPrimType PTInt)    = "0"
-            defaultValue (TPrimType PTUInt)   = "0'u32"
-            defaultValue (TPrimType PTLong)   = "0'i64"
-            defaultValue (TPrimType PTULong)  = "0'u64"
-            defaultValue (TPrimType PTReal)   = "0.0"
-            defaultValue (TPrimType PTString) = "\"\""
-            defaultValue (TList _)            = "@[]"
-            defaultValue _                    = "nil"
 
     generateParticipants : String -> String -> List State -> List Transition -> List Participant -> String
     generateParticipants pre name ss ts ps
@@ -289,26 +287,26 @@ toNim fsm
       where
         generateParticipant : String -> String -> List State -> List Transition -> Participant -> String
         generateParticipant pre name ss ts p@(MkParticipant n _)
-          = let event_routers = nub $ flatten $ map (generateEventCallsByParticipantAndTransition indentDelta p) ts
+          = let event_routers = nub $ flatten $ map (generateEventCallsByParticipantAndTransition indentDelta name p) ts
                 state_routers = map (generateStateCall indentDelta pre name) ss in
                 join "\n" [ "const " ++ (toNimName n) ++ "_routers* = @["
                           , join ",\n" $ (state_routers ++ event_routers)
                           , "]"
                           ]
           where
-            generateEventCallsByParticipantAndTransition : Nat -> Participant -> Transition -> List String
-            generateEventCallsByParticipantAndTransition idt p (MkTransition _ _ ts)
-              = filter nonblank $ map (generateEventCallByParticipantAndTrigger idt p) ts
+            generateEventCallsByParticipantAndTransition : Nat -> String -> Participant -> Transition -> List String
+            generateEventCallsByParticipantAndTransition idt name p (MkTransition _ _ ts)
+              = filter nonblank $ map (generateEventCallByParticipantAndTrigger idt name p) ts
               where
-                generateEventCallByParticipantAndTrigger : Nat -> Participant -> Trigger -> String
-                generateEventCallByParticipantAndTrigger idt p (MkTrigger ps e _ _)
+                generateEventCallByParticipantAndTrigger : Nat -> String -> Participant -> Trigger -> String
+                generateEventCallByParticipantAndTrigger idt name p (MkTrigger ps e _ _)
                   = if elemBy (==) p ps
-                       then (indent idt) ++ "RouteProc(" ++ (toNimName (Event.name e)) ++ ")"
+                       then (indent idt) ++ "RouteProc(" ++ (toNimName name) ++ "." ++ (toNimName (Event.name e)) ++ ")"
                        else ""
 
             generateStateCall : Nat -> String -> String -> State -> String
             generateStateCall idt pre name (MkState n _ _ _)
-              = (indent idt) ++ "RouteProc(get_" ++ (toNimName n) ++ "_" ++ (toNimName name) ++ "_list)"
+              = (indent idt) ++ "RouteProc(" ++ (toNimName name) ++ ".get_" ++ (toNimName n) ++ "_" ++ (toNimName name) ++ "_list)"
 
 
 loadFsm : String -> Either String Fsm
