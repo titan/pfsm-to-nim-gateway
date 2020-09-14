@@ -210,7 +210,7 @@ toNim fsm
                                         , (indent (indentDelta * 2)) ++ "if val.isSome:"
                                         , (indent (indentDelta * 3)) ++ "case fields[idx]:"
                                         , join "\n" $ map (\(n, t, _) => generateGetJsonHandler (indentDelta * 4) n t) norms
-                                        , join "\n" $ map (\(n, t, _) => generateGetReferenceJsonHandler (indentDelta * 4) n t) refs
+                                        , join "\n" $ map (\((n, t, _), r) => generateGetReferenceJsonHandler (indentDelta * 4) n t r) refs
                                         , (indent (indentDelta * 4)) ++ "else:"
                                         , (indent (indentDelta * 5)) ++ "payload.add(fields[idx].toLowerAscii, % val.get)"
                                         , (indent (indentDelta * 2)) ++ "else:"
@@ -221,15 +221,15 @@ toNim fsm
                                         , (indent indentDelta) ++ "result = some(payload)"
                                         ]
       where
-        splitParameters : List Parameter -> (List Parameter, List Parameter)
+        splitParameters : List Parameter -> (List Parameter, List (Parameter, String))
         splitParameters ps
           = splitParameters' ps [] []
           where
-            splitParameters' : List Parameter -> List Parameter -> List Parameter -> (List Parameter, List Parameter)
+            splitParameters' : List Parameter -> List Parameter -> List (Parameter, String) -> (List Parameter, List (Parameter, String))
             splitParameters' []                   acc1 acc2 = (acc1, acc2)
-            splitParameters' (p@(_, _, ms) :: xs) acc1 acc2 = if isJust (lookup "reference" ms)
-                                                                 then splitParameters' xs acc1 (p :: acc2)
-                                                                 else splitParameters' xs (p :: acc1) acc2
+            splitParameters' (p@(_, _, ms) :: xs) acc1 acc2 =  case lookup "reference" ms of
+                                                                    Just (MVString r) => splitParameters' xs acc1 ((p, r) :: acc2)
+                                                                    _ => splitParameters' xs (p :: acc1) acc2
 
         generateGetJsonHandler : Nat -> Name -> Tipe -> String
         generateGetJsonHandler idt n (TList _)   = join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
@@ -242,12 +242,12 @@ toNim fsm
                                                              , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, % " ++ (toNimFromString "val.get" t) ++ ")"
                                                              ]
 
-        generateGetReferenceJsonHandler : Nat -> Name -> Tipe -> String
-        generateGetReferenceJsonHandler idt n _
+        generateGetReferenceJsonHandler : Nat -> Name -> Tipe -> String -> String
+        generateGetReferenceJsonHandler idt n _ ref
           = join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
                       , (indent (idt + indentDelta)) ++ "let"
-                      , (indent (idt + indentDelta * 2)) ++ "key = \"tenant:\" & $tenant & \"#" ++ n ++ ":\" & val.get(\"0\")"
-                      , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_opt" ++ " = await get_" ++ (toNimName n) ++ "_json(redis, tenant, key)"
+                      , (indent (idt + indentDelta * 2)) ++ "key = \"tenant:\" & $tenant & \"#" ++ ref ++ ":\" & val.get(\"0\")"
+                      , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_opt" ++ " = await get_" ++ (toNimName ref) ++ "_json(redis, tenant, key)"
                       , (indent (idt + indentDelta)) ++ "if " ++ (toNimName n) ++ "_opt.isSome:"
                       , (indent (idt + indentDelta * 2)) ++ "let " ++ (toNimName n) ++ " = " ++ (toNimName n) ++ "_opt.get"
                       , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ ".add(\"fsmid\", % val.get)"
