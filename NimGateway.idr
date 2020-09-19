@@ -311,23 +311,18 @@ toNim fsm
 
 loadFsm : String -> Either String Fsm
 loadFsm src
-  = case parseSExp src of
-         Left (Error e _) => Left e
-         Right (sexp, _) => case analyse sexp of
-                                 Left (Error e _) => Left e
-                                 Right (fsm, _) => case check fsm defaultCheckingRules of
-                                                        Just errs => Left $ foldl (\a, x => a ++ "\n" ++ x) "" errs
-                                                        Nothing => Right fsm
+  = do (sexp, _) <- mapError parseErrorToString $ parseSExp src
+       (fsm, _) <- mapError parseErrorToString $ analyse sexp
+       fsm' <- mapError checkersErrorToString $ check fsm defaultCheckingRules
+       pure fsm'
 
 doWork : String -> IO ()
 doWork src
-  = do
-    r <- readFile src
-    case r of
-         Left e => putStrLn $ show e
-         Right c => case loadFsm c of
-                         Left e => putStrLn $ e
-                         Right fsm => putStrLn $ toNim fsm
+  = do Right content <- readFile src
+       | Left err => putStrLn $ show err
+       case loadFsm content of
+            Left e => putStrLn e
+            Right fsm => putStrLn $ toNim fsm
 
 usage : IO ()
 usage
