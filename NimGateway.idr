@@ -49,7 +49,7 @@ toNim fsm
 
     generateImports : List Name -> String
     generateImports refereds
-      = List.join "\n" [ "import asyncdispatch, gateway_helper, httpbeauty, httpbeast, json, options, random, re, sequtils, strtabs, strutils"
+      = List.join "\n" [ "import asyncdispatch, gateway_helper, httpbeauty, httpbeast, json, options, random, re, sequtils, strtabs, strutils, times"
                        , "import redis except `%`"
                        , List.join "\n" $ map (\x => "import " ++ (toNimName x)) refereds
                        ]
@@ -61,12 +61,12 @@ toNim fsm
       where
         generateEvent : String -> String -> String -> Event -> String
         generateEvent pre name fsmidcode (MkEvent n ps ms)
-          = let withoutId = isJust $ lookup "gateway.without-id" ms
-                middleware = fromMaybe (MVString "signature-security") $ lookup "gateway.middleware" ms in
+          = let isCreator = isJust $ lookup "creator" ms
+                middleware = fromMaybe (MVString "signature-security-session") $ lookup "gateway.middleware" ms in
                 join "\n" $ List.filter nonblank [ "proc " ++ (toNimName n) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
-                                                 , if not withoutId then (indent indentDelta) ++ "var matches: array[1, string]" else ""
-                                                 , if not withoutId then (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/(.+)\\/" ++ n ++ "$\", matches):" else (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and request.path.get(\"\") == \"/" ++ name ++ "\":"
-                                                 , generateMiddleware (indentDelta * 2) name fsmidcode n withoutId middleware ps
+                                                 , if not isCreator then (indent indentDelta) ++ "var matches: array[1, string]" else ""
+                                                 , if not isCreator then (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/(.+)\\/" ++ n ++ "$\", matches):" else (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and request.path.get(\"\") == \"/" ++ name ++ "/" ++ n ++ "\":"
+                                                 , generateMiddleware (indentDelta * 2) name fsmidcode n isCreator middleware ps
                                                  , (indent indentDelta) ++ "else:"
                                                  , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                                                  ]
@@ -117,52 +117,57 @@ toNim fsm
                 generateSignatureBody' (n, (TDict _ _), _)          = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
                 generateSignatureBody' (n, _,                    _) = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
 
-            generateMainBody : Nat -> String -> String -> Bool -> List Parameter -> String
-            generateMainBody idt fsmidcode n withoutId ps
-              = List.join "\n" $ List.filter nonblank [ (indent idt) ++ "let"
-                                                      , (indent (idt + (indentDelta * 1))) ++ "callback = $rand(uint64)"
-                                                      , (indent (idt + (indentDelta * 1))) ++ "fsmid = " ++ if not withoutId then "fromHex[BiggestUInt](id)" else fsmidcode
-                                                      , (indent (idt + (indentDelta * 1))) ++ "args = {"
-                                                      , (indent (idt + (indentDelta * 2))) ++ "\"TENANT\": $tenant,"
-                                                      , (indent (idt + (indentDelta * 2))) ++ "\"GATEWAY\": ctx.gateway,"
-                                                      , (indent (idt + (indentDelta * 2))) ++ "\"TASK-TYPE\": \"PLAY-EVENT\","
-                                                      , (indent (idt + (indentDelta * 2))) ++ "\"FSMID\": $fsmid,"
-                                                      , (indent (idt + (indentDelta * 2))) ++ "\"EVENT\": " ++ (show (toUpper n)) ++ ","
-                                                      , (indent (idt + (indentDelta * 2))) ++ "\"CALLBACK\": callback,"
-                                                      , generateEventArguments (idt + (indentDelta * 2)) ps
-                                                      , (indent (idt + (indentDelta * 1))) ++ "}"
-                                                      , (indent idt) ++ "discard await ctx.queue_redis.xadd(queue, @args)"
-                                                      , (indent idt) ++ "result = await check_result(ctx.cache_redis, callback, 0)"
-                                                      ]
+            generateMainBody : Nat -> String -> String -> Bool -> String -> List Parameter -> String
+            generateMainBody idt fsmidcode n isCreator middleware ps
+              = let isInSession = isInfixOf "session" middleware in
+                    List.join "\n" $ List.filter nonblank [ (indent idt) ++ "let"
+                                                          , (indent (idt + (indentDelta * 1))) ++ "callback = $rand(uint64)"
+                                                          , (indent (idt + (indentDelta * 1))) ++ "fsmid = " ++ if not isCreator then "id.parseBiggestUInt" else fsmidcode
+                                                          , (indent (idt + (indentDelta * 1))) ++ "args = {"
+                                                          , (indent (idt + (indentDelta * 2))) ++ "\"TENANT\": $tenant,"
+                                                          , (indent (idt + (indentDelta * 2))) ++ "\"GATEWAY\": ctx.gateway,"
+                                                          , (indent (idt + (indentDelta * 2))) ++ "\"TASK\": \"PLAY-EVENT\","
+                                                          , (indent (idt + (indentDelta * 2))) ++ "\"FSMID\": $fsmid,"
+                                                          , (indent (idt + (indentDelta * 2))) ++ "\"EVENT\": " ++ (show (toUpper n)) ++ ","
+                                                          , (indent (idt + (indentDelta * 2))) ++ "\"CALLBACK\": callback,"
+                                                          , (indent (idt + (indentDelta * 2))) ++ "\"OCCURRED-AT\": $to_mytimestamp(now()),"
+                                                          , if isInSession then (indent (idt + (indentDelta * 2))) ++ "\"TRIGGER\": $session," else ""
+                                                          , generateEventArguments (idt + (indentDelta * 2)) ps
+                                                          , (indent (idt + (indentDelta * 1))) ++ "}"
+                                                          , (indent idt) ++ "discard await ctx.queue_redis.xadd(queue, @args)"
+                                                          , (indent idt) ++ "result = await check_result(ctx.cache_redis, tenant, callback, 0)"
+                                                          ]
 
             generateMiddleware : Nat -> String -> String -> String -> Bool -> MetaValue -> List Parameter -> String
-            generateMiddleware idt name fsmidcode n withoutId (MVString middleware) ps
-              = List.join "\n"
-              $ List.filter nonblank
-              $ if middleware /= ""
-                   then [ (indent idt) ++ "let"
-                        , if not withoutId then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
-                        , generateGetEventArguments (idt + indentDelta) ps
-                        , generateSignatureBody (idt + indentDelta) ps
-                        , (indent idt) ++ "check_" ++ (toNimName middleware) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if withoutId then [name, n] else [name, "$2", n])) ++ (if withoutId then "|$1\" % signbody):" else "|$1\" % [signbody, id]):")
-                        , generateMainBody (idt + indentDelta) fsmidcode n withoutId ps
-                        ]
-                   else [ (indent idt) ++ "let"
-                        , if not withoutId then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
-                        , generateGetEventArguments (idt + indentDelta) ps
-                        , generateSignatureBody (idt + indentDelta) ps
-                        , generateMainBody idt fsmidcode n withoutId ps
-                        ]
-            generateMiddleware idt name fsmidcode n withoutId _ ps
-              = generateMainBody idt fsmidcode n withoutId ps
+            generateMiddleware idt name fsmidcode n isCreator (MVString middleware) ps
+              = let codes = if middleware /= ""
+                               then [ (indent idt) ++ "let"
+                                    , if not isCreator then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
+                                    , generateGetEventArguments (idt + indentDelta) ps
+                                    , generateSignatureBody (idt + indentDelta) ps
+                                    , (indent idt) ++ "check_" ++ (toNimName middleware) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if isCreator then [name, n] else [name, "$2", n])) ++ (if isCreator then "|$1\" % signbody):" else "|$1\" % [signbody, id]):")
+                                    , generateMainBody (idt + indentDelta) fsmidcode n isCreator middleware ps
+                                    ]
+                               else [ (indent idt) ++ "let"
+                                    , if not isCreator then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
+                                    , generateGetEventArguments (idt + indentDelta) ps
+                                    , generateSignatureBody (idt + indentDelta) ps
+                                    , generateMainBody idt fsmidcode n isCreator middleware ps
+                                    ] in
+                    List.join "\n" $ List.filter nonblank codes
+            generateMiddleware idt name fsmidcode n isCreator _ ps
+              = generateMainBody idt fsmidcode n isCreator "" ps
 
     generateFetchLists : String -> String -> List1 State -> String
     generateFetchLists pre name ss
       = List1.join "\n\n" $ map (generateFetchList pre name) ss
       where
         generateFetchList : String -> String -> State -> String
-        generateFetchList pre name (MkState n _ _ _)
-          = let nimname = toNimName name in
+        generateFetchList pre name (MkState n _ _ ms)
+          = let middleware = case lookup "gateway.middleware" ms of
+                                  Just (MVString mw) => mw
+                                  _ => "signature-security-session"
+                nimname = toNimName name in
                 List.join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName n) ++ "_" ++ nimname ++ "_list*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                                       , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/" ++ n ++ "\"):"
                                                       , (indent (indentDelta * 2)) ++ "let"
@@ -170,7 +175,7 @@ toNim fsm
                                                       , (indent (indentDelta * 3)) ++ "offset   = parseInt(params.getOrDefault(\"offset\", \"0\"))"
                                                       , (indent (indentDelta * 3)) ++ "limit    = parseInt(params.getOrDefault(\"limit\", \"10\"))"
                                                       , (indent (indentDelta * 3)) ++ "signbody = @[\"limit=\" & $limit, \"offset=\" & $offset].join(\"&\")"
-                                                      , (indent (indentDelta * 2)) ++ "check_signature_security(request, ctx, \"GET|/" ++ name ++ "/" ++ n ++ "|$1\" % signbody):"
+                                                      , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName middleware) ++ "(request, ctx, \"GET|/" ++ name ++ "/" ++ n ++ "|$1\" % signbody):"
                                                       , (indent (indentDelta * 3)) ++ "let"
                                                       , (indent (indentDelta * 4)) ++ "srckey = \"tenant:\" & $tenant & \"#" ++ name ++ "." ++ n ++ "\""
                                                       , (indent (indentDelta * 4)) ++ "total  = await ctx.cache_redis.zcard(srckey)"
@@ -188,9 +193,12 @@ toNim fsm
                                                       , (indent (indentDelta * 3)) ++ "pagination.add(\"total\", % total)"
                                                       , (indent (indentDelta * 3)) ++ "pagination.add(\"offset\", % offset)"
                                                       , (indent (indentDelta * 3)) ++ "pagination.add(\"limit\", % limit)"
+                                                      , (indent (indentDelta * 3)) ++ "var payload = newJObject()"
+                                                      , (indent (indentDelta * 3)) ++ "payload.add(\"pagination\", pagination)"
+                                                      , (indent (indentDelta * 3)) ++ "payload.add(\"data\", items)"
                                                       , (indent (indentDelta * 3)) ++ "var ret = newJObject()"
-                                                      , (indent (indentDelta * 3)) ++ "ret.add(\"pagination\", pagination)"
-                                                      , (indent (indentDelta * 3)) ++ "ret.add(\"data\", items)"
+                                                      , (indent (indentDelta * 3)) ++ "ret.add(\"code\", %200)"
+                                                      , (indent (indentDelta * 3)) ++ "ret.add(\"payload\", payload)"
                                                       , (indent (indentDelta * 3)) ++ "resp(ret)"
                                                       , (indent indentDelta) ++ "else:"
                                                       , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
@@ -220,6 +228,7 @@ toNim fsm
                                                   , join "\n" $ map (\(n, t, _) => generateDefaultGetJsonHandler (indentDelta * 4) n t) ps
                                                   , (indent (indentDelta * 4)) ++ "else:"
                                                   , (indent (indentDelta * 5)) ++ "payload.add(fields[idx].toLowerAscii, % \"\")"
+                                                  , (indent (indentDelta * 2)) ++ "idx += 1"
                                                   , (indent indentDelta) ++ "result = some(payload)"
                                                   ]
       where
@@ -291,7 +300,7 @@ toNim fsm
         generateParticipant pre name ss ts p@(MkParticipant n _)
           = let event_routers = nub $ flatten $ List1.toList $ map (generateEventCallsByParticipantAndTransition indentDelta name p) ts
                 state_routers = List1.toList $ map (generateStateCall indentDelta pre name) ss in
-                List.join "\n" [ "const " ++ (toNimName n) ++ "_routers* = @["
+                List.join "\n" [ "let " ++ (toNimName n) ++ "_routers*: seq[RouteProc[GatewayContext]] = @["
                                , List.join ",\n" (state_routers ++ event_routers)
                                , "]"
                                ]
@@ -303,12 +312,12 @@ toNim fsm
                 generateEventCallByParticipantAndTrigger : Nat -> String -> Participant -> Trigger -> String
                 generateEventCallByParticipantAndTrigger idt name p (MkTrigger ps e _ _)
                   = if elemBy (==) p ps
-                       then (indent idt) ++ "RouteProc(" ++ (toNimName name) ++ "." ++ (toNimName (Event.name e)) ++ ")"
+                       then (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ "." ++ (toNimName (Event.name e)) ++ ")"
                        else ""
 
             generateStateCall : Nat -> String -> String -> State -> String
             generateStateCall idt pre name (MkState n _ _ _)
-              = (indent idt) ++ "RouteProc(" ++ (toNimName name) ++ ".get_" ++ (toNimName n) ++ "_" ++ (toNimName name) ++ "_list)"
+              = (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName n) ++ "_" ++ (toNimName name) ++ "_list)"
 
 
 loadFsm : String -> Either String Fsm
