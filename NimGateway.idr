@@ -28,6 +28,7 @@ toNim fsm
                          , "const queue = " ++ (show (name ++ "-input"))
                          , generateEventCalls pre name idfields fsm.events
                          , generateGetJsonCall pre name fsm.model
+                         , generateFetchObject pre name
                          , generateFetchLists pre name fsm.states
                          , generateParticipants pre name fsm.states fsm.transitions fsm.participants
                          ]
@@ -157,6 +158,34 @@ toNim fsm
                     List.join "\n" $ List.filter nonblank codes
             generateMiddleware idt name fsmidcode n fsmIdStyle _ ps
               = generateMainBody idt fsmidcode n fsmIdStyle "" ps
+
+    generateFetchObject : String -> String -> String
+    generateFetchObject pre name
+      = List.join "\n" [ "proc get_" ++ (toNimName name) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
+                       , (indent indentDelta) ++ "var matches: array[1, string]"
+                       , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and match(request.path.get(\"\"),  re\"^\\/" ++ name ++ "\\/(.+)$\", matches):"
+                       , (indent (indentDelta * 2)) ++ "let"
+                       , (indent (indentDelta * 3)) ++ "id = matches[0]"
+                       , (indent (indentDelta * 3)) ++ "signbody = \"\""
+                       , (indent (indentDelta * 2)) ++ "check_signature_security(request, ctx, \"GET|/" ++ name ++ "/$2|$1\" % [signbody, id]):"
+                       , (indent (indentDelta * 3)) ++ "let"
+                       , (indent (indentDelta * 4)) ++ "key = \"tenant:\" & $tenant & \"#" ++ name ++ ":\" & id"
+                       , (indent (indentDelta * 4)) ++ "objopt = await get_" ++ (toNimName name) ++ "_json(ctx.cache_redis, tenant, key)"
+                       , (indent (indentDelta * 3)) ++ "if objopt.isSome:"
+                       , (indent (indentDelta * 4)) ++ "var obj = objopt.get"
+                       , (indent (indentDelta * 4)) ++ "obj.add(\"fsmid\", %id)"
+                       , (indent (indentDelta * 4)) ++ "var ret = newJObject()"
+                       , (indent (indentDelta * 4)) ++ "ret.add(\"code\", %200)"
+                       , (indent (indentDelta * 4)) ++ "ret.add(\"payload\", obj)"
+                       , (indent (indentDelta * 4)) ++ "resp(ret)"
+                       , (indent (indentDelta * 3)) ++ "else:"
+                       , (indent (indentDelta * 4)) ++ "var ret = newJObject()"
+                       , (indent (indentDelta * 4)) ++ "ret.add(\"code\", %404)"
+                       , (indent (indentDelta * 4)) ++ "ret.add(\"payload\", %\"Not Found\")"
+                       , (indent (indentDelta * 4)) ++ "resp(ret)"
+                       , (indent indentDelta) ++ "else:"
+                       , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
+                       ]
 
     generateFetchLists : String -> String -> List1 State -> String
     generateFetchLists pre name ss
@@ -298,10 +327,12 @@ toNim fsm
       where
         generateParticipant : String -> String -> List1 State -> List1 Transition -> Participant -> String
         generateParticipant pre name ss ts p@(MkParticipant n _)
-          = let event_routers = nub $ flatten $ List1.toList $ map (generateEventCallsByParticipantAndTransition indentDelta name p) ts
-                state_routers = List1.toList $ map (generateStateCall indentDelta pre name) ss in
+          = let eventRouters = nub $ flatten $ List1.toList $ map (generateEventCallsByParticipantAndTransition indentDelta name p) ts
+                stateRouters = List1.toList $ map (generateStateCall indentDelta pre name) ss
+                getObjRouter = (indent indentDelta) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName name) ++ ")"
+                in
                 List.join "\n" [ "let " ++ (toNimName n) ++ "_routers*: seq[RouteProc[GatewayContext]] = @["
-                               , List.join ",\n" (state_routers ++ event_routers)
+                               , List.join ",\n" (getObjRouter :: (stateRouters ++ eventRouters))
                                , "]"
                                ]
           where
