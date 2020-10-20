@@ -60,24 +60,18 @@ toNim fsm
             List1.join "\n\n" $ map (generateEvent pre name fsmidcode) es
       where
         generateEvent : String -> String -> String -> Event -> String
-        generateEvent pre name fsmidcode (MkEvent n ps ms)
-          = let style = fsmidStyle ms
+        generateEvent pre name fsmidcode evt@(MkEvent n ps ms)
+          = let style = fsmIdStyleOfEvent evt
                 middleware = fromMaybe (MVString "signature-security-session") $ lookup "gateway.middleware" ms in
                 join "\n" $ List.filter nonblank [ "proc " ++ (toNimName n) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
-                                                 , if style == "url" then (indent indentDelta) ++ "var matches: array[1, string]" else ""
-                                                 , if style == "url" then (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/(.+)\\/" ++ n ++ "$\", matches):" else (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and request.path.get(\"\") == \"/" ++ name ++ "/" ++ n ++ "\":"
+                                                 , if style == FsmIdStyleUrl then (indent indentDelta) ++ "var matches: array[1, string]" else ""
+                                                 , if style == FsmIdStyleUrl then (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/(.+)\\/" ++ n ++ "$\", matches):" else (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and request.path.get(\"\") == \"/" ++ name ++ "/" ++ n ++ "\":"
                                                  , generateMiddleware (indentDelta * 2) name fsmidcode n style middleware ps
                                                  , (indent indentDelta) ++ "else:"
                                                  , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                                                  ]
 
           where
-            fsmidStyle : Maybe (List Meta) -> String
-            fsmidStyle ms
-              = case lookup "gateway.fsmid-style" ms of
-                     Just (MVString ref) => ref
-                     _ => "url"
-
             generateGetEventArgument : Nat -> Parameter -> String
             generateGetEventArgument idt (n, (TList t), _)   = let lhs = (indent idt) ++ (toNimName n)
                                                                    rhs = "data{\"" ++ n ++ "\"}" in
@@ -123,12 +117,12 @@ toNim fsm
                 generateSignatureBody' (n, (TDict _ _), _)          = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
                 generateSignatureBody' (n, _,                    _) = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
 
-            generateMainBody : Nat -> String -> String -> String -> String -> List Parameter -> String
-            generateMainBody idt fsmidcode n fsmidstyle middleware ps
+            generateMainBody : Nat -> String -> String -> FsmIdStyle -> String -> List Parameter -> String
+            generateMainBody idt fsmidcode n fsmIdStyle middleware ps
               = let isInSession = isInfixOf "session" middleware in
                     List.join "\n" $ List.filter nonblank [ (indent idt) ++ "let"
                                                           , (indent (idt + (indentDelta * 1))) ++ "callback = $rand(uint64)"
-                                                          , (indent (idt + (indentDelta * 1))) ++ "fsmid = " ++ if fsmidstyle == "url" then "id.parseBiggestUInt" else (if fsmidstyle == "session" then "session" else fsmidcode)
+                                                          , (indent (idt + (indentDelta * 1))) ++ "fsmid = " ++ if fsmIdStyle == FsmIdStyleUrl then "id.parseBiggestUInt" else (if fsmIdStyle == FsmIdStyleSession then "session" else fsmidcode)
                                                           , (indent (idt + (indentDelta * 1))) ++ "args = {"
                                                           , (indent (idt + (indentDelta * 2))) ++ "\"TENANT\": $tenant,"
                                                           , (indent (idt + (indentDelta * 2))) ++ "\"GATEWAY\": ctx.gateway,"
@@ -144,25 +138,25 @@ toNim fsm
                                                           , (indent idt) ++ "result = await check_result(ctx.cache_redis, tenant, callback, 0)"
                                                           ]
 
-            generateMiddleware : Nat -> String -> String -> String -> String -> MetaValue -> List Parameter -> String
-            generateMiddleware idt name fsmidcode n fsmidstyle (MVString middleware) ps
+            generateMiddleware : Nat -> String -> String -> String -> FsmIdStyle -> MetaValue -> List Parameter -> String
+            generateMiddleware idt name fsmidcode n fsmIdStyle (MVString middleware) ps
               = let codes = if middleware /= ""
                                then [ (indent idt) ++ "let"
-                                    , if fsmidstyle == "url" then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
+                                    , if fsmIdStyle == FsmIdStyleUrl then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
                                     , generateGetEventArguments (idt + indentDelta) ps
                                     , generateSignatureBody (idt + indentDelta) ps
-                                    , (indent idt) ++ "check_" ++ (toNimName middleware) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if fsmidstyle == "url" then [name, "$2", n] else [name, n])) ++ (if fsmidstyle == "url" then "|$1\" % [signbody, id]):" else "|$1\" % signbody):")
-                                    , generateMainBody (idt + indentDelta) fsmidcode n fsmidstyle middleware ps
+                                    , (indent idt) ++ "check_" ++ (toNimName middleware) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if fsmIdStyle == FsmIdStyleUrl then [name, "$2", n] else [name, n])) ++ (if fsmIdStyle == FsmIdStyleUrl then "|$1\" % [signbody, id]):" else "|$1\" % signbody):")
+                                    , generateMainBody (idt + indentDelta) fsmidcode n fsmIdStyle middleware ps
                                     ]
                                else [ (indent idt) ++ "let"
-                                    , if fsmidstyle == "url" then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
+                                    , if fsmIdStyle == FsmIdStyleUrl then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
                                     , generateGetEventArguments (idt + indentDelta) ps
                                     , generateSignatureBody (idt + indentDelta) ps
-                                    , generateMainBody idt fsmidcode n fsmidstyle middleware ps
+                                    , generateMainBody idt fsmidcode n fsmIdStyle middleware ps
                                     ] in
                     List.join "\n" $ List.filter nonblank codes
-            generateMiddleware idt name fsmidcode n fsmidstyle _ ps
-              = generateMainBody idt fsmidcode n fsmidstyle "" ps
+            generateMiddleware idt name fsmidcode n fsmIdStyle _ ps
+              = generateMainBody idt fsmidcode n fsmIdStyle "" ps
 
     generateFetchLists : String -> String -> List1 State -> String
     generateFetchLists pre name ss
@@ -338,11 +332,6 @@ doWork src
   = do Right fsm <- loadFsmFromFile src
        | Left err => putStrLn $ show err
        putStrLn $ toNim fsm
---  = do Right content <- readFile src
---       | Left err => putStrLn $ show err
---       case loadFsm content of
---            Left e => putStrLn e
---            Right fsm => putStrLn $ toNim fsm
 
 usage : IO ()
 usage
