@@ -30,7 +30,7 @@ toNim fsm
                          , generateGetJsonCall pre name fsm.model
                          , generateFetchObject pre name
                          , generateFetchLists pre name fsm.states
-                         , generateParticipants pre name fsm.states fsm.transitions fsm.participants
+                         , generateRouters pre name fsm.states fsm.transitions fsm.participants
                          ]
   where
     idFieldFilter : Parameter -> Bool
@@ -47,6 +47,11 @@ toNim fsm
         referenced' ((_, _, ms) :: xs) acc = case lookup "reference" ms of
                                                   Just (MVString dst) => referenced' xs (dst :: acc)
                                                   _ => referenced' xs acc
+
+    liftParticipantFromOutputAction : Action -> Maybe String
+    liftParticipantFromOutputAction (OutputAction "add-to-state-list-of-participant"      (_ :: p :: _)) = Just (show p)
+    liftParticipantFromOutputAction (OutputAction "remove-from-state-list-of-participant" (_ :: p :: _)) = Just (show p)
+    liftParticipantFromOutputAction _                                                                    = Nothing
 
     generateImports : List Name -> String
     generateImports refereds
@@ -189,15 +194,20 @@ toNim fsm
 
     generateFetchLists : String -> String -> List1 State -> String
     generateFetchLists pre name ss
-      = List1.join "\n\n" $ map (generateFetchList pre name) ss
+      = let normalCode = List1.join "\n\n" $ map (generateFetchList pre name "" "\"tenant:\" & $tenant") ss
+            participantStates = filter isStateForParticipant ss
+            participantCode = List.join "\n\n" $ map (generateFetchListOfParticipant pre name) participantStates in
+            List.join "\n\n" [ normalCode
+                             , participantCode
+                             ]
       where
-        generateFetchList : String -> String -> State -> String
-        generateFetchList pre name (MkState n _ _ ms)
+        generateFetchList : String -> String -> String -> String -> State -> String
+        generateFetchList pre name funPostfix cachePostfix (MkState n _ _ ms)
           = let middleware = case lookup "gateway.middleware" ms of
                                   Just (MVString mw) => mw
                                   _ => "signature-security-session"
                 nimname = toNimName name in
-                List.join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName n) ++ "_" ++ nimname ++ "_list*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
+                List.join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName n) ++ "_" ++ nimname ++ "_list" ++ funPostfix ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                                       , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/" ++ n ++ "\"):"
                                                       , (indent (indentDelta * 2)) ++ "let"
                                                       , (indent (indentDelta * 3)) ++ "params   = request.params"
@@ -206,9 +216,9 @@ toNim fsm
                                                       , (indent (indentDelta * 3)) ++ "signbody = @[\"limit=\" & $limit, \"offset=\" & $offset].join(\"&\")"
                                                       , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName middleware) ++ "(request, ctx, \"GET|/" ++ name ++ "/" ++ n ++ "|$1\" % signbody):"
                                                       , (indent (indentDelta * 3)) ++ "let"
-                                                      , (indent (indentDelta * 4)) ++ "srckey = \"tenant:\" & $tenant & \"#" ++ name ++ "." ++ n ++ "\""
+                                                      , (indent (indentDelta * 4)) ++ "srckey = " ++ cachePostfix ++ " & \"#" ++ name ++ "." ++ n ++ "\""
                                                       , (indent (indentDelta * 4)) ++ "total  = await ctx.cache_redis.zcard(srckey)"
-                                                      , (indent (indentDelta * 4)) ++ "ids  = await ctx.cache_redis.zrevrange(srckey, offset, offset + limit - 1)"
+                                                      , (indent (indentDelta * 4)) ++ "ids    = await ctx.cache_redis.zrevrange(srckey, offset, offset + limit - 1)"
                                                       , (indent (indentDelta * 3)) ++ "var items = newJArray()"
                                                       , (indent (indentDelta * 3)) ++ "for id in ids:"
                                                       , (indent (indentDelta * 4)) ++ "let"
@@ -232,6 +242,28 @@ toNim fsm
                                                       , (indent indentDelta) ++ "else:"
                                                       , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                                                       ]
+
+        isOutputActionOfParticipant : Action -> Bool
+        isOutputActionOfParticipant (OutputAction "add-to-state-list-of-participant" _)      = True
+        isOutputActionOfParticipant (OutputAction "remove-from-state-list-of-participant" _) = True
+        isOutputActionOfParticipant _                                                        = False
+
+        isStateForParticipant : State -> Bool
+        isStateForParticipant (MkState _ (Just as1) (Just as2) _) = foldl (\acc, x => acc || isOutputActionOfParticipant x) (foldl (\acc, x => acc || isOutputActionOfParticipant x) False as1) as2
+        isStateForParticipant (MkState _ (Just as)  Nothing    _) = foldl (\acc, x => acc || isOutputActionOfParticipant x) False as
+        isStateForParticipant (MkState _ Nothing    (Just as)  _) = foldl (\acc, x => acc || isOutputActionOfParticipant x) False as
+        isStateForParticipant (MkState _ Nothing    Nothing    _) = False
+
+        generateFetchListOfParticipant' : String -> String -> State -> List Action -> String
+        generateFetchListOfParticipant' pre name state as
+          = let participants = map (fromMaybe "") $ filter isJust $ map liftParticipantFromOutputAction as in
+                List.join "\n\n" $ nub $ map (\p => generateFetchList pre name ("_of_" ++ p) ("\"tenant:\" & $tenant & \"#" ++ p ++ ":\" & $session") state) participants
+
+        generateFetchListOfParticipant : String -> String -> State -> String
+        generateFetchListOfParticipant pre name state@(MkState _ (Just enas) (Just exas) _) = generateFetchListOfParticipant' pre name state (enas ++ exas)
+        generateFetchListOfParticipant pre name state@(MkState _ Nothing     (Just exas) _) = generateFetchListOfParticipant' pre name state exas
+        generateFetchListOfParticipant pre name state@(MkState _ (Just enas) Nothing     _) = generateFetchListOfParticipant' pre name state enas
+        generateFetchListOfParticipant pre name state@(MkState _ Nothing     Nothing     _) = ""
 
     generateGetJsonCall : String -> String -> List Parameter -> String
     generateGetJsonCall pre name ps
@@ -321,14 +353,14 @@ toNim fsm
                            , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, % " ++ (defaultValue t) ++ ")"
                            ]
 
-    generateParticipants : String -> String -> List1 State -> List1 Transition -> List1 Participant -> String
-    generateParticipants pre name ss ts ps
+    generateRouters : String -> String -> List1 State -> List1 Transition -> List1 Participant -> String
+    generateRouters pre name ss ts ps
       = List1.join "\n\n" $ map (generateParticipant pre name ss ts) ps
       where
         generateParticipant : String -> String -> List1 State -> List1 Transition -> Participant -> String
         generateParticipant pre name ss ts p@(MkParticipant n _)
           = let eventRouters = nub $ flatten $ List1.toList $ map (generateEventCallsByParticipantAndTransition indentDelta name p) ts
-                stateRouters = List1.toList $ map (generateStateCall indentDelta pre name) ss
+                stateRouters = List1.toList $ map (generateStateCall indentDelta pre name p) ss
                 getObjRouter = (indent indentDelta) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName name) ++ ")"
                 in
                 List.join "\n" [ "let " ++ (toNimName n) ++ "_routers*: seq[RouteProc[GatewayContext]] = @["
@@ -346,9 +378,17 @@ toNim fsm
                        then (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ "." ++ (toNimName (Event.name e)) ++ ")"
                        else ""
 
-            generateStateCall : Nat -> String -> String -> State -> String
-            generateStateCall idt pre name (MkState n _ _ _)
-              = (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName n) ++ "_" ++ (toNimName name) ++ "_list)"
+            generateStateCall : Nat -> String -> String -> Participant -> State -> String
+            generateStateCall idt pre name p@(MkParticipant pname _) s@(MkState sname _ _ _)
+              = if isMatchParticipant p s
+                   then (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName sname) ++ "_" ++ (toNimName name) ++ "_list_of_" ++ (toNimName pname) ++ ")"
+                   else (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName sname) ++ "_" ++ (toNimName name) ++ "_list)"
+              where
+                isMatchParticipant : Participant -> State -> Bool
+                isMatchParticipant (MkParticipant pname _) (MkState _ (Just enas) (Just exas) _) = elem pname $ map (fromMaybe "") $ filter isJust (map liftParticipantFromOutputAction (enas ++ exas))
+                isMatchParticipant (MkParticipant pname _) (MkState _ (Just enas) Nothing     _) = elem pname $ map (fromMaybe "") $ filter isJust (map liftParticipantFromOutputAction enas)
+                isMatchParticipant (MkParticipant pname _) (MkState _ Nothing     (Just exas) _) = elem pname $ map (fromMaybe "") $ filter isJust (map liftParticipantFromOutputAction exas)
+                isMatchParticipant (MkParticipant pname _) (MkState _ Nothing     Nothing     _) = False
 
 
 loadFsm : String -> Either String Fsm
