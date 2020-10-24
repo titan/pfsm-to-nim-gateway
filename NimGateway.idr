@@ -28,7 +28,7 @@ toNim fsm
                          , "const queue = " ++ (show (name ++ "-input"))
                          , generateEventCalls pre name idfields fsm.events
                          , generateGetJsonCall pre name fsm.model
-                         , generateFetchObject pre name
+                         , generateFetchObject pre name fsm
                          , generateFetchLists pre name fsm.states
                          , generateRouters pre name fsm.states fsm.transitions fsm.participants
                          ]
@@ -164,33 +164,38 @@ toNim fsm
             generateMiddleware idt name fsmidcode n fsmIdStyle _ ps
               = generateMainBody idt fsmidcode n fsmIdStyle "" ps
 
-    generateFetchObject : String -> String -> String
-    generateFetchObject pre name
-      = List.join "\n" [ "proc get_" ++ (toNimName name) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
-                       , (indent indentDelta) ++ "var matches: array[1, string]"
-                       , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and match(request.path.get(\"\"),  re\"^\\/" ++ name ++ "\\/(.+)$\", matches):"
-                       , (indent (indentDelta * 2)) ++ "let"
-                       , (indent (indentDelta * 3)) ++ "id = matches[0]"
-                       , (indent (indentDelta * 3)) ++ "signbody = \"\""
-                       , (indent (indentDelta * 2)) ++ "check_signature_security(request, ctx, \"GET|/" ++ name ++ "/$2|$1\" % [signbody, id]):"
-                       , (indent (indentDelta * 3)) ++ "let"
-                       , (indent (indentDelta * 4)) ++ "key = \"tenant:\" & $tenant & \"#" ++ name ++ ":\" & id"
-                       , (indent (indentDelta * 4)) ++ "objopt = await get_" ++ (toNimName name) ++ "_json(ctx.cache_redis, tenant, key)"
-                       , (indent (indentDelta * 3)) ++ "if objopt.isSome:"
-                       , (indent (indentDelta * 4)) ++ "var obj = objopt.get"
-                       , (indent (indentDelta * 4)) ++ "obj.add(\"fsmid\", %id)"
-                       , (indent (indentDelta * 4)) ++ "var ret = newJObject()"
-                       , (indent (indentDelta * 4)) ++ "ret.add(\"code\", %200)"
-                       , (indent (indentDelta * 4)) ++ "ret.add(\"payload\", obj)"
-                       , (indent (indentDelta * 4)) ++ "resp(ret)"
-                       , (indent (indentDelta * 3)) ++ "else:"
-                       , (indent (indentDelta * 4)) ++ "var ret = newJObject()"
-                       , (indent (indentDelta * 4)) ++ "ret.add(\"code\", %404)"
-                       , (indent (indentDelta * 4)) ++ "ret.add(\"payload\", %\"Not Found\")"
-                       , (indent (indentDelta * 4)) ++ "resp(ret)"
-                       , (indent indentDelta) ++ "else:"
-                       , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
-                       ]
+    generateFetchObject : String -> String -> Fsm -> String
+    generateFetchObject pre name fsm@(MkFsm _ _ _ _ _ _ metas)
+      = let middleware = case lookup "gateway.middleware" metas of
+                              Just (MVString mw) => mw
+                              _ => "signature-security-session"
+            fsmIdStyle = fsmIdStyleOfFsm fsm in
+            join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName name) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
+                                             , if fsmIdStyle == FsmIdStyleUrl then (indent indentDelta) ++ "var matches: array[1, string]" else ""
+                                             , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and " ++ (if fsmIdStyle == FsmIdStyleUrl then "match(request.path.get(\"\"),  re\"^\\/" ++ name ++ "\\/(.+)$\", matches):" else "request.path.get(\"\") == \"/" ++ name ++ "\":")
+                                             , (indent (indentDelta * 2)) ++ "let"
+                                             , if fsmIdStyle == FsmIdStyleUrl then (indent (indentDelta * 3)) ++ "id = matches[0]" else ""
+                                             , (indent (indentDelta * 3)) ++ "signbody = \"\""
+                                             , (indent (indentDelta * 2)) ++ if fsmIdStyle == FsmIdStyleSession then ("check_" ++ (toNimName middleware) ++ "(request, ctx, \"GET|/" ++ name ++ "|$1\" % signbody):") else ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "/$2|$1\" % [signbody, id]):")
+                                             , (indent (indentDelta * 3)) ++ "let"
+                                             , if fsmIdStyle == FsmIdStyleSession then (indent (indentDelta * 4)) ++ "id = $session" else ""
+                                             , (indent (indentDelta * 4)) ++ "key = \"tenant:\" & $tenant & \"#" ++ name ++ ":\" & id"
+                                             , (indent (indentDelta * 4)) ++ "objopt = await get_" ++ (toNimName name) ++ "_json(ctx.cache_redis, tenant, key)"
+                                             , (indent (indentDelta * 3)) ++ "if objopt.isSome:"
+                                             , (indent (indentDelta * 4)) ++ "var obj = objopt.get"
+                                             , (indent (indentDelta * 4)) ++ "obj.add(\"fsmid\", %id)"
+                                             , (indent (indentDelta * 4)) ++ "var ret = newJObject()"
+                                             , (indent (indentDelta * 4)) ++ "ret.add(\"code\", %200)"
+                                             , (indent (indentDelta * 4)) ++ "ret.add(\"payload\", obj)"
+                                             , (indent (indentDelta * 4)) ++ "resp(ret)"
+                                             , (indent (indentDelta * 3)) ++ "else:"
+                                             , (indent (indentDelta * 4)) ++ "var ret = newJObject()"
+                                             , (indent (indentDelta * 4)) ++ "ret.add(\"code\", %404)"
+                                             , (indent (indentDelta * 4)) ++ "ret.add(\"payload\", %\"Not Found\")"
+                                             , (indent (indentDelta * 4)) ++ "resp(ret)"
+                                             , (indent indentDelta) ++ "else:"
+                                             , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
+                                             ]
 
     generateFetchLists : String -> String -> List1 State -> String
     generateFetchLists pre name ss
@@ -208,7 +213,7 @@ toNim fsm
                                   _ => "signature-security-session"
                 nimname = toNimName name in
                 List.join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName n) ++ "_" ++ nimname ++ "_list" ++ funPostfix ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
-                                                      , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/" ++ n ++ "\"):"
+                                                      , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and request.path.get(\"\") == \"/" ++ name ++ "/" ++ n ++ "\":"
                                                       , (indent (indentDelta * 2)) ++ "let"
                                                       , (indent (indentDelta * 3)) ++ "params   = request.params"
                                                       , (indent (indentDelta * 3)) ++ "offset   = parseInt(params.getOrDefault(\"offset\", \"0\"))"
