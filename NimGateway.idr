@@ -19,9 +19,10 @@ indentDelta : Nat
 indentDelta = 2
 
 toNim : Fsm -> String
-toNim fsm
+toNim fsm@(MkFsm _ _ _ _ _ _ metas)
   = let name = fsm.name
         pre = camelize (toNimName name)
+        display = displayName name metas
         idfields = filter idFieldFilter fsm.model
         refereds = referenced fsm.model in
         List.join "\n\n" [ generateImports refereds
@@ -31,6 +32,7 @@ toNim fsm
                          , generateFetchObject pre name fsm
                          , generateFetchLists pre name fsm.states
                          , generateRouters pre name fsm.states fsm.transitions fsm.participants
+                         , generatePermissions pre name display fsm.states fsm.transitions fsm.participants
                          ]
   where
     idFieldFilter : Parameter -> Bool
@@ -360,10 +362,10 @@ toNim fsm
 
     generateRouters : String -> String -> List1 State -> List1 Transition -> List1 Participant -> String
     generateRouters pre name ss ts ps
-      = List1.join "\n\n" $ map (generateParticipant pre name ss ts) ps
+      = List1.join "\n\n" $ map (generateRoutersOfParticipant pre name ss ts) ps
       where
-        generateParticipant : String -> String -> List1 State -> List1 Transition -> Participant -> String
-        generateParticipant pre name ss ts p@(MkParticipant n _)
+        generateRoutersOfParticipant : String -> String -> List1 State -> List1 Transition -> Participant -> String
+        generateRoutersOfParticipant pre name ss ts p@(MkParticipant n _)
           = let eventRouters = nub $ flatten $ List1.toList $ map (generateEventCallsByParticipantAndTransition indentDelta name p) ts
                 stateRouters = List1.toList $ map (generateStateCall indentDelta pre name p) ss
                 getObjRouter = (indent indentDelta) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName name) ++ ")"
@@ -395,6 +397,32 @@ toNim fsm
                 isMatchParticipant (MkParticipant pname _) (MkState _ Nothing     (Just exas) _) = elem pname $ map (fromMaybe "") $ filter isJust (map liftParticipantFromOutputAction exas)
                 isMatchParticipant (MkParticipant pname _) (MkState _ Nothing     Nothing     _) = False
 
+    generatePermissions : String -> String -> String -> List1 State -> List1 Transition -> List1 Participant -> String
+    generatePermissions pre name display states transitions participants
+      = List1.join "\n\n" $ map (generatePermissionsOfParticipant pre name states transitions) participants
+      where
+        generatePermissionsOfParticipant : String -> String -> List1 State -> List1 Transition -> Participant -> String
+        generatePermissionsOfParticipant pre name ss ts p@(MkParticipant n _)
+          = let eventPermissions = nub $ flatten $ List1.toList $ map (generateEventPermissions indentDelta name p) ts
+                statePermissions = List1.toList $ map (generateStatePermissions indentDelta pre name p) ss in
+                List.join "\n" [ "let " ++ (toNimName n) ++ "_permissions*: seq[(string, string)] = @["
+                               , List.join ",\n" (eventPermissions ++ statePermissions)
+                               , "]"
+                               ]
+          where
+            generateEventPermissions : Nat -> String -> Participant -> Transition -> List String
+            generateEventPermissions idt name p (MkTransition _ _ ts)
+              = filter nonblank $ map (generateEventPermissionsByTrigger idt name p) ts
+              where
+                generateEventPermissionsByTrigger : Nat -> String -> Participant -> Trigger -> String
+                generateEventPermissionsByTrigger idt name p (MkTrigger ps (MkEvent ename _ metas) _ _)
+                  = if elemBy (==) p ps
+                       then (indent idt) ++ "(\"" ++ (displayName ename metas) ++ "\", " ++ (show (name ++ ":" ++ ename)) ++ ")"
+                       else ""
+
+            generateStatePermissions : Nat -> String -> String -> Participant -> State -> String
+            generateStatePermissions idt pre name p@(MkParticipant pname _) s@(MkState sname _ _ metas)
+              = (indent idt) ++ "(\"" ++ "获取" ++ (displayName sname metas) ++ "列表" ++ "\", " ++ (show (name ++ ":get-" ++ sname ++ "-list")) ++ ")"
 
 loadFsm : String -> Either String Fsm
 loadFsm src
