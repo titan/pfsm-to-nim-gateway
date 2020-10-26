@@ -18,8 +18,25 @@ import Pfsm.Nim
 indentDelta : Nat
 indentDelta = 2
 
-toNim : Fsm -> String
-toNim fsm@(MkFsm _ _ _ _ _ _ metas)
+record AppConfig where
+  constructor MkAppConfig
+  src : String
+  middleware : String
+
+Show AppConfig where
+  show (MkAppConfig src middleware)
+    = List.join "\n" [ "src: " ++ src
+                     , "middleware: " ++ (show middleware)
+                     ]
+
+middleware : String -> Maybe (List Meta) -> String
+middleware defaultValue metas
+  = case lookup "gateway.middleware" metas of
+         Just (MVString m) => m
+         _ => defaultValue
+
+toNim : AppConfig -> Fsm -> String
+toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
   = let name = fsm.name
         pre = camelize (toNimName name)
         display = displayName name metas
@@ -27,10 +44,10 @@ toNim fsm@(MkFsm _ _ _ _ _ _ metas)
         refereds = referenced fsm.model in
         List.join "\n\n" [ generateImports refereds
                          , "const queue = " ++ (show (name ++ "-input"))
-                         , generateEventCalls pre name idfields fsm.events
+                         , generateEventCalls pre name mw idfields fsm.events
                          , generateGetJsonCall pre name fsm.model
-                         , generateFetchObject pre name fsm
-                         , generateFetchLists pre name fsm.states
+                         , generateFetchObject pre name mw fsm
+                         , generateFetchLists pre name mw fsm.states
                          , generateRouters pre name fsm.states fsm.transitions fsm.participants
                          , generatePermissions pre name display fsm.states fsm.transitions fsm.participants
                          ]
@@ -62,19 +79,19 @@ toNim fsm@(MkFsm _ _ _ _ _ _ metas)
                        , List.join "\n" $ map (\x => "import " ++ (toNimName x)) refereds
                        ]
 
-    generateEventCalls : String -> String -> List Parameter -> List1 Event -> String
-    generateEventCalls pre name idfields es
+    generateEventCalls : String -> String -> String -> List Parameter -> List1 Event -> String
+    generateEventCalls pre name defaultMiddleware idfields es
       = let fsmidcode = "generate_fsmid($tenant & \"-" ++ name ++ "-\" & " ++ (join " & " (map (\(n, t, _) => "$" ++ (toNimName n)) idfields)) ++ ")" in
             List1.join "\n\n" $ map (generateEvent pre name fsmidcode) es
       where
         generateEvent : String -> String -> String -> Event -> String
         generateEvent pre name fsmidcode evt@(MkEvent n ps ms)
           = let style = fsmIdStyleOfEvent evt
-                middleware = fromMaybe (MVString "signature-security-session") $ lookup "gateway.middleware" ms in
+                mw = middleware defaultMiddleware ms in
                 join "\n" $ List.filter nonblank [ "proc " ++ (toNimName n) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                                  , if style == FsmIdStyleUrl then (indent indentDelta) ++ "var matches: array[1, string]" else ""
                                                  , if style == FsmIdStyleUrl then (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/(.+)\\/" ++ n ++ "$\", matches):" else (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and request.path.get(\"\") == \"/" ++ name ++ "/" ++ n ++ "\":"
-                                                 , generateMiddleware (indentDelta * 2) name fsmidcode n style middleware ps
+                                                 , generateMiddleware (indentDelta * 2) name fsmidcode n style mw ps
                                                  , (indent indentDelta) ++ "else:"
                                                  , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                                                  ]
@@ -126,8 +143,8 @@ toNim fsm@(MkFsm _ _ _ _ _ _ metas)
                 generateSignatureBody' (n, _,                    _) = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
 
             generateMainBody : Nat -> String -> String -> FsmIdStyle -> String -> List Parameter -> String
-            generateMainBody idt fsmidcode n fsmIdStyle middleware ps
-              = let isInSession = isInfixOf "session" middleware in
+            generateMainBody idt fsmidcode n fsmIdStyle mw ps
+              = let isInSession = isInfixOf "session" mw in
                     List.join "\n" $ List.filter nonblank [ (indent idt) ++ "let"
                                                           , (indent (idt + (indentDelta * 1))) ++ "callback = $rand(uint64)"
                                                           , (indent (idt + (indentDelta * 1))) ++ "fsmid = " ++ if fsmIdStyle == FsmIdStyleUrl then "id.parseBiggestUInt" else (if fsmIdStyle == FsmIdStyleSession then "session" else fsmidcode)
@@ -146,31 +163,19 @@ toNim fsm@(MkFsm _ _ _ _ _ _ metas)
                                                           , (indent idt) ++ "result = await check_result(ctx.cache_redis, tenant, callback, 0)"
                                                           ]
 
-            generateMiddleware : Nat -> String -> String -> String -> FsmIdStyle -> MetaValue -> List Parameter -> String
-            generateMiddleware idt name fsmidcode n fsmIdStyle (MVString middleware) ps
-              = let codes = if middleware /= ""
-                               then [ (indent idt) ++ "let"
-                                    , if fsmIdStyle == FsmIdStyleUrl then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
-                                    , generateGetEventArguments (idt + indentDelta) ps
-                                    , generateSignatureBody (idt + indentDelta) ps
-                                    , (indent idt) ++ "check_" ++ (toNimName middleware) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if fsmIdStyle == FsmIdStyleUrl then [name, "$2", n] else [name, n])) ++ (if fsmIdStyle == FsmIdStyleUrl then "|$1\" % [signbody, id]):" else "|$1\" % signbody):")
-                                    , generateMainBody (idt + indentDelta) fsmidcode n fsmIdStyle middleware ps
-                                    ]
-                               else [ (indent idt) ++ "let"
-                                    , if fsmIdStyle == FsmIdStyleUrl then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
-                                    , generateGetEventArguments (idt + indentDelta) ps
-                                    , generateSignatureBody (idt + indentDelta) ps
-                                    , generateMainBody idt fsmidcode n fsmIdStyle middleware ps
-                                    ] in
-                    List.join "\n" $ List.filter nonblank codes
-            generateMiddleware idt name fsmidcode n fsmIdStyle _ ps
-              = generateMainBody idt fsmidcode n fsmIdStyle "" ps
+            generateMiddleware : Nat -> String -> String -> String -> FsmIdStyle -> String -> List Parameter -> String
+            generateMiddleware idt name fsmidcode ename fsmIdStyle mw ps
+              = join "\n" $ List.filter nonblank [ (indent idt) ++ "let"
+                                                 , if fsmIdStyle == FsmIdStyleUrl then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
+                                                 , generateGetEventArguments (idt + indentDelta) ps
+                                                 , generateSignatureBody (idt + indentDelta) ps
+                                                 , (indent idt) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if fsmIdStyle == FsmIdStyleUrl then [name, "$2", ename] else [name, ename])) ++ (if fsmIdStyle == FsmIdStyleUrl then "|$1\" % [signbody, id], \"" ++ name ++ ":" ++ ename ++ "\"):" else "|$1\" % signbody, \"" ++ name ++ ":" ++ ename ++ "\"):")
+                                                 , generateMainBody (idt + indentDelta) fsmidcode n fsmIdStyle mw ps
+                                                 ]
 
-    generateFetchObject : String -> String -> Fsm -> String
-    generateFetchObject pre name fsm@(MkFsm _ _ _ _ _ _ metas)
-      = let middleware = case lookup "gateway.middleware" metas of
-                              Just (MVString mw) => mw
-                              _ => "signature-security-session"
+    generateFetchObject : String -> String -> String -> Fsm -> String
+    generateFetchObject pre name defaultMiddleware fsm@(MkFsm _ _ _ _ _ _ metas)
+      = let mw = middleware defaultMiddleware metas
             fsmIdStyle = fsmIdStyleOfFsm fsm in
             join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName name) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                              , if fsmIdStyle == FsmIdStyleUrl then (indent indentDelta) ++ "var matches: array[1, string]" else ""
@@ -178,7 +183,7 @@ toNim fsm@(MkFsm _ _ _ _ _ _ metas)
                                              , (indent (indentDelta * 2)) ++ "let"
                                              , if fsmIdStyle == FsmIdStyleUrl then (indent (indentDelta * 3)) ++ "id = matches[0]" else ""
                                              , (indent (indentDelta * 3)) ++ "signbody = \"\""
-                                             , (indent (indentDelta * 2)) ++ if fsmIdStyle == FsmIdStyleSession then ("check_" ++ (toNimName middleware) ++ "(request, ctx, \"GET|/" ++ name ++ "|$1\" % signbody):") else ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "/$2|$1\" % [signbody, id]):")
+                                             , (indent (indentDelta * 2)) ++ if fsmIdStyle == FsmIdStyleSession then ("check_" ++ (toNimName mw) ++ "(request, ctx, \"GET|/" ++ name ++ "|$1\" % signbody, \"\"):") else ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "/$2|$1\" % [signbody, id], \"\"):")
                                              , (indent (indentDelta * 3)) ++ "let"
                                              , if fsmIdStyle == FsmIdStyleSession then (indent (indentDelta * 4)) ++ "id = $session" else ""
                                              , (indent (indentDelta * 4)) ++ "key = \"tenant:\" & $tenant & \"#" ++ name ++ ":\" & id"
@@ -199,20 +204,18 @@ toNim fsm@(MkFsm _ _ _ _ _ _ metas)
                                              , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                                              ]
 
-    generateFetchLists : String -> String -> List1 State -> String
-    generateFetchLists pre name ss
-      = let normalCode = List1.join "\n\n" $ map (generateFetchList pre name "" "\"tenant:\" & $tenant") ss
+    generateFetchLists : String -> String -> String -> List1 State -> String
+    generateFetchLists pre name defaultMiddleware ss
+      = let normalCode = List1.join "\n\n" $ map (generateFetchList pre name defaultMiddleware "" "\"tenant:\" & $tenant") ss
             participantStates = filter isStateForParticipant ss
-            participantCode = List.join "\n\n" $ map (generateFetchListOfParticipant pre name) participantStates in
+            participantCode = List.join "\n\n" $ map (generateFetchListOfParticipant pre name defaultMiddleware) participantStates in
             List.join "\n\n" [ normalCode
                              , participantCode
                              ]
       where
-        generateFetchList : String -> String -> String -> String -> State -> String
-        generateFetchList pre name funPostfix cachePostfix (MkState n _ _ ms)
-          = let middleware = case lookup "gateway.middleware" ms of
-                                  Just (MVString mw) => mw
-                                  _ => "signature-security-session"
+        generateFetchList : String -> String -> String -> String -> String -> State -> String
+        generateFetchList pre name defaultMiddleware funPostfix cachePostfix (MkState n _ _ ms)
+          = let mw = middleware defaultMiddleware ms
                 nimname = toNimName name in
                 List.join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName n) ++ "_" ++ nimname ++ "_list" ++ funPostfix ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                                       , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and request.path.get(\"\") == \"/" ++ name ++ "/" ++ n ++ "\":"
@@ -221,7 +224,7 @@ toNim fsm@(MkFsm _ _ _ _ _ _ metas)
                                                       , (indent (indentDelta * 3)) ++ "offset   = parseInt(params.getOrDefault(\"offset\", \"0\"))"
                                                       , (indent (indentDelta * 3)) ++ "limit    = parseInt(params.getOrDefault(\"limit\", \"10\"))"
                                                       , (indent (indentDelta * 3)) ++ "signbody = @[\"limit=\" & $limit, \"offset=\" & $offset].join(\"&\")"
-                                                      , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName middleware) ++ "(request, ctx, \"GET|/" ++ name ++ "/" ++ n ++ "|$1\" % signbody):"
+                                                      , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"GET|/" ++ name ++ "/" ++ n ++ "|$1\" % signbody, \"" ++ name ++ ":get-" ++ n ++ "-list" ++ "\"):"
                                                       , (indent (indentDelta * 3)) ++ "let"
                                                       , (indent (indentDelta * 4)) ++ "srckey = " ++ cachePostfix ++ " & \"#" ++ name ++ "." ++ n ++ "\""
                                                       , (indent (indentDelta * 4)) ++ "total  = await ctx.cache_redis.zcard(srckey)"
@@ -261,16 +264,16 @@ toNim fsm@(MkFsm _ _ _ _ _ _ metas)
         isStateForParticipant (MkState _ Nothing    (Just as)  _) = foldl (\acc, x => acc || isOutputActionOfParticipant x) False as
         isStateForParticipant (MkState _ Nothing    Nothing    _) = False
 
-        generateFetchListOfParticipant' : String -> String -> State -> List Action -> String
-        generateFetchListOfParticipant' pre name state as
+        generateFetchListOfParticipant' : String -> String -> String -> State -> List Action -> String
+        generateFetchListOfParticipant' pre name defaultMiddleware state as
           = let participants = map (fromMaybe "") $ filter isJust $ map liftParticipantFromOutputAction as in
-                List.join "\n\n" $ nub $ map (\p => generateFetchList pre name ("_of_" ++ p) ("\"tenant:\" & $tenant & \"#" ++ p ++ ":\" & $session") state) participants
+                List.join "\n\n" $ nub $ map (\p => generateFetchList pre name defaultMiddleware ("_of_" ++ p) ("\"tenant:\" & $tenant & \"#" ++ p ++ ":\" & $session") state) participants
 
-        generateFetchListOfParticipant : String -> String -> State -> String
-        generateFetchListOfParticipant pre name state@(MkState _ (Just enas) (Just exas) _) = generateFetchListOfParticipant' pre name state (enas ++ exas)
-        generateFetchListOfParticipant pre name state@(MkState _ Nothing     (Just exas) _) = generateFetchListOfParticipant' pre name state exas
-        generateFetchListOfParticipant pre name state@(MkState _ (Just enas) Nothing     _) = generateFetchListOfParticipant' pre name state enas
-        generateFetchListOfParticipant pre name state@(MkState _ Nothing     Nothing     _) = ""
+        generateFetchListOfParticipant : String -> String -> String -> State -> String
+        generateFetchListOfParticipant pre name dmw state@(MkState _ (Just enas) (Just exas) _) = generateFetchListOfParticipant' pre name dmw state (enas ++ exas)
+        generateFetchListOfParticipant pre name dmw state@(MkState _ Nothing     (Just exas) _) = generateFetchListOfParticipant' pre name dmw state exas
+        generateFetchListOfParticipant pre name dmw state@(MkState _ (Just enas) Nothing     _) = generateFetchListOfParticipant' pre name dmw state enas
+        generateFetchListOfParticipant pre name dmw state@(MkState _ Nothing     Nothing     _) = ""
 
     generateGetJsonCall : String -> String -> List Parameter -> String
     generateGetJsonCall pre name ps
@@ -431,20 +434,41 @@ loadFsm src
        fsm' <- mapError checkersErrorToString $ check fsm defaultCheckingRules
        pure fsm'
 
-doWork : String -> IO ()
-doWork src
-  = do Right fsm <- loadFsmFromFile src
+doWork : AppConfig -> IO ()
+doWork conf
+  = do Right fsm <- loadFsmFromFile conf.src
        | Left err => putStrLn $ show err
-       putStrLn $ toNim fsm
+       putStrLn $ toNim conf fsm
 
-usage : IO ()
+parseArgs : List String -> Maybe AppConfig
+parseArgs
+  = parseArgs' Nothing Nothing
+  where
+    parseArgs' : Maybe String -> Maybe String -> List String -> Maybe AppConfig
+    parseArgs' Nothing    _                 []                 = Nothing
+    parseArgs' (Just src) Nothing           []                 = Just (MkAppConfig src "signature-security-session")
+    parseArgs' (Just src) (Just middleware) []                 = Just (MkAppConfig src middleware)
+    parseArgs' _          _                 []                 = Nothing
+    parseArgs' src        _                 ("-mw" :: x :: xs) = parseArgs' src (Just x) xs
+    parseArgs' _          middleware        (x :: xs)          = parseArgs' (Just x) middleware xs
+
+usage : String
 usage
-  = putStrLn "Usage: pfsm-to-nim-gateway <src>"
+  = List.join "\n" [ "Usage: pfsm-to-nim-gateway [options] <src>"
+                   , ""
+                   , "Options:"
+                   , "  -mv <middleware> Specify the default middleware to handle incoming requests."
+                   , "                   Middlewares are:"
+                   , "                   1. signature-security"
+                   , "                   2. signature-security-session (default)"
+                   , "                   3. signature-security-session-permission"
+                   ]
 
 main : IO ()
 main
-  = do
-    args <- getArgs
-    case args of
-         x0 :: x1 :: [] => doWork x1
-         _ => usage
+  = do args <- getArgs
+       case tail' args of
+            Nothing => putStrLn usage
+            Just args' => case parseArgs args' of
+                               Just conf => doWork conf
+                               Nothing => putStrLn usage
