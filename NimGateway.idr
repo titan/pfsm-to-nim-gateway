@@ -299,8 +299,12 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                   , join "\n" $ map (\(n, t, _) => generateDefaultGetJsonHandler (indentDelta * 4) n t) ps
                                                   , (indent (indentDelta * 4)) ++ "else:"
                                                   , (indent (indentDelta * 5)) ++ "payload.add(fields[idx].toLowerAscii, % \"\")"
+                                                  , (indent (indentDelta * 3)) ++ "nilcount += 1"
                                                   , (indent (indentDelta * 2)) ++ "idx += 1"
-                                                  , (indent indentDelta) ++ "result = some(payload)"
+                                                  , (indent indentDelta) ++ "if len(values) == nilcount:"
+                                                  , (indent (indentDelta * 2)) ++ "result = none(JsonNode)"
+                                                  , (indent indentDelta) ++ "else:"
+                                                  , (indent (indentDelta * 2)) ++ "result = some[JsonNode](payload)"
                                                   ]
       where
         splitParameters : List Parameter -> (List Parameter, List (Parameter, String))
