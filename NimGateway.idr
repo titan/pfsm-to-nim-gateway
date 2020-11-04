@@ -98,15 +98,21 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
 
           where
             generateGetEventArgument : Nat -> Parameter -> String
-            generateGetEventArgument idt (n, (TList t), _)   = let lhs = (indent idt) ++ (toNimName n)
-                                                                   rhs = "data{\"" ++ n ++ "\"}" in
-                                                                   lhs ++ " = " ++ rhs
-            generateGetEventArgument idt (n, (TDict k v), _) = let lhs = (indent idt) ++ (toNimName n)
-                                                                   rhs = "data{\"" ++ n ++ "\"}" in
-                                                                   lhs ++ " = " ++ rhs
-            generateGetEventArgument idt (n, t, _)           = let lhs = (indent idt) ++ (toNimName n)
-                                                                   rhs = toNimFromJson ("data{\"" ++ n ++ "\"}") t in
-                                                                   lhs ++ " = " ++ rhs
+            generateGetEventArgument idt (n, (TPrimType PTLong), _)  = let lhs = (indent idt) ++ (toNimName n)
+                                                                           rhs = "data{\"" ++ n ++ "\"}.getStr(\"0\")" in
+                                                                           lhs ++ " = " ++ rhs
+            generateGetEventArgument idt (n, (TPrimType PTULong), _) = let lhs = (indent idt) ++ (toNimName n)
+                                                                           rhs = "data{\"" ++ n ++ "\"}.getStr(\"0\")" in
+                                                                           lhs ++ " = " ++ rhs
+            generateGetEventArgument idt (n, (TList t), _)           = let lhs = (indent idt) ++ (toNimName n)
+                                                                           rhs = "data{\"" ++ n ++ "\"}" in
+                                                                           lhs ++ " = " ++ rhs
+            generateGetEventArgument idt (n, (TDict k v), _)         = let lhs = (indent idt) ++ (toNimName n)
+                                                                           rhs = "data{\"" ++ n ++ "\"}" in
+                                                                           lhs ++ " = " ++ rhs
+            generateGetEventArgument idt (n, t, _)                   = let lhs = (indent idt) ++ (toNimName n)
+                                                                           rhs = toNimFromJson ("data{\"" ++ n ++ "\"}") t in
+                                                                           lhs ++ " = " ++ rhs
 
             generateGetEventArguments : Nat -> List Parameter -> String
             generateGetEventArguments idt [] = ""
@@ -114,16 +120,12 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                               , List.join "\n" $ map (generateGetEventArgument idt) ps
                                                               ]
 
-            toNimArg : Name -> Tipe -> String
-            toNimArg n (TPrimType PTString) = toNimName n
-            toNimArg n (TPrimType _)        = "$" ++ (toNimName n)
-            toNimArg n (TList t)            = "$" ++ (toNimName n)
-            toNimArg n (TDict k v)          = "$" ++ (toNimName n)
-            toNimArg n _                    = toNimName n
-
             generateEventArgument : Nat -> Parameter -> String
-            generateEventArgument idt (n, t, _)
-              = (indent idt) ++ (show (toUpper n)) ++ ": " ++ toNimArg (toNimName n) t ++ ","
+            generateEventArgument idt (n, (TPrimType PTLong), _)  = (indent idt) ++ (show (toUpper n)) ++ ": " ++ (toNimName n) ++ ","
+            generateEventArgument idt (n, (TPrimType PTULong), _) = (indent idt) ++ (show (toUpper n)) ++ ": " ++ (toNimName n) ++ ","
+            generateEventArgument idt (n, (TList _), _)           = (indent idt) ++ (show (toUpper n)) ++ ": $" ++ (toNimName n) ++ ","
+            generateEventArgument idt (n, (TDict _ _), _)         = (indent idt) ++ (show (toUpper n)) ++ ": $" ++ (toNimName n) ++ ","
+            generateEventArgument idt (n, t, _)                   = (indent idt) ++ (show (toUpper n)) ++ ": " ++ toNimString (toNimName n) t ++ ","
 
             generateEventArguments : Nat -> List Parameter -> String
             generateEventArguments idt ps
@@ -138,6 +140,8 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
               where
                 generateSignatureBody' : Parameter -> String
                 generateSignatureBody' (n, (TPrimType PTString), _) = "\"" ++ n ++ "=\" & " ++ (toNimName n)
+                generateSignatureBody' (n, (TPrimType PTLong), _)   = "\"" ++ n ++ "=\" & " ++ (toNimName n)
+                generateSignatureBody' (n, (TPrimType PTULong), _)  = "\"" ++ n ++ "=\" & " ++ (toNimName n)
                 generateSignatureBody' (n, (TList _), _)            = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
                 generateSignatureBody' (n, (TDict _ _), _)          = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
                 generateSignatureBody' (n, _,                    _) = "\"" ++ n ++ "=\" & $ " ++ (toNimName n)
