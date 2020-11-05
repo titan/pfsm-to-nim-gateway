@@ -90,7 +90,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                 mw = middleware defaultMiddleware ms in
                 join "\n" $ List.filter nonblank [ "proc " ++ (toNimName n) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                                  , if style == FsmIdStyleUrl then (indent indentDelta) ++ "var matches: array[1, string]" else ""
-                                                 , if style == FsmIdStyleUrl then (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/(.+)\\/" ++ n ++ "$\", matches):" else (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and request.path.get(\"\") == \"/" ++ name ++ "/" ++ n ++ "\":"
+                                                 , if style == FsmIdStyleUrl then (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and match(request.path.get(\"\"), re\"^\\/" ++ name ++ "\\/([0-9]+)\\/" ++ n ++ "$\", matches):" else (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpPost and request.path.get(\"\") == \"/" ++ name ++ "/" ++ n ++ "\":"
                                                  , generateMiddleware (indentDelta * 2) name fsmidcode n style mw ps
                                                  , (indent indentDelta) ++ "else:"
                                                  , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
@@ -183,7 +183,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
             fsmIdStyle = fsmIdStyleOfFsm fsm in
             join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName name) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                              , if fsmIdStyle == FsmIdStyleUrl then (indent indentDelta) ++ "var matches: array[1, string]" else ""
-                                             , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and " ++ (if fsmIdStyle == FsmIdStyleUrl then "match(request.path.get(\"\"),  re\"^\\/" ++ name ++ "\\/(.+)$\", matches):" else "request.path.get(\"\") == \"/" ++ name ++ "\":")
+                                             , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and " ++ (if fsmIdStyle == FsmIdStyleUrl then "match(request.path.get(\"\"),  re\"^\\/" ++ name ++ "\\/([0-9]+)$\", matches):" else "request.path.get(\"\") == \"/" ++ name ++ "\":")
                                              , (indent (indentDelta * 2)) ++ "let"
                                              , if fsmIdStyle == FsmIdStyleUrl then (indent (indentDelta * 3)) ++ "id = matches[0]" else ""
                                              , (indent (indentDelta * 3)) ++ "signbody = \"\""
@@ -222,7 +222,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
           = let mw = middleware defaultMiddleware ms
                 nimname = toNimName name in
                 List.join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName n) ++ "_" ++ nimname ++ "_list" ++ funPostfix ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
-                                                      , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and request.path.get(\"\") == \"/" ++ name ++ "/" ++ n ++ "\":"
+                                                      , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and request.path.get(\"\").startsWith(\"/" ++ name ++ "/" ++ n ++ "\"):"
                                                       , (indent (indentDelta * 2)) ++ "let"
                                                       , (indent (indentDelta * 3)) ++ "params   = request.params"
                                                       , (indent (indentDelta * 3)) ++ "offset   = parseInt(params.getOrDefault(\"offset\", \"0\"))"
@@ -382,7 +382,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                 getObjRouter = (indent indentDelta) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName name) ++ ")"
                 in
                 List.join "\n" [ "let " ++ (toNimName n) ++ "_routers*: seq[RouteProc[GatewayContext]] = @["
-                               , List.join ",\n" (getObjRouter :: (stateRouters ++ eventRouters))
+                               , List.join ",\n" (stateRouters ++ [getObjRouter] ++ eventRouters)
                                , "]"
                                ]
           where
