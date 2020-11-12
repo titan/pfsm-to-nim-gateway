@@ -120,17 +120,6 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                               , List.join "\n" $ map (generateGetEventArgument idt) ps
                                                               ]
 
-            generateEventArgument : Nat -> Parameter -> String
-            generateEventArgument idt (n, (TPrimType PTLong), _)  = (indent idt) ++ (show (toUpper n)) ++ ": " ++ (toNimName n) ++ ","
-            generateEventArgument idt (n, (TPrimType PTULong), _) = (indent idt) ++ (show (toUpper n)) ++ ": " ++ (toNimName n) ++ ","
-            generateEventArgument idt (n, (TList _), _)           = (indent idt) ++ (show (toUpper n)) ++ ": $" ++ (toNimName n) ++ ","
-            generateEventArgument idt (n, (TDict _ _), _)         = (indent idt) ++ (show (toUpper n)) ++ ": $" ++ (toNimName n) ++ ","
-            generateEventArgument idt (n, t, _)                   = (indent idt) ++ (show (toUpper n)) ++ ": " ++ toNimString (toNimName n) t ++ ","
-
-            generateEventArguments : Nat -> List Parameter -> String
-            generateEventArguments idt ps
-              = List.join "\n" $ map (generateEventArgument idt) ps
-
             generateSignatureBody : Nat -> List Parameter -> String
             generateSignatureBody idt ps
               = let items = map generateSignatureBody' $ sortBy (\(a, _, _), (b, _, _) => compare a b) ps in
@@ -152,6 +141,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                     List.join "\n" $ List.filter nonblank [ (indent idt) ++ "let"
                                                           , (indent (idt + (indentDelta * 1))) ++ "callback = $rand(uint64)"
                                                           , (indent (idt + (indentDelta * 1))) ++ "fsmid = " ++ if fsmIdStyle == FsmIdStyleUrl then "id.parseBiggestUInt" else (if fsmIdStyle == FsmIdStyleSession then "session" else fsmidcode)
+
                                                           , (indent (idt + (indentDelta * 1))) ++ "args = {"
                                                           , (indent (idt + (indentDelta * 2))) ++ "\"TENANT\": $tenant,"
                                                           , (indent (idt + (indentDelta * 2))) ++ "\"GATEWAY\": ctx.gateway,"
@@ -161,7 +151,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                           , (indent (idt + (indentDelta * 2))) ++ "\"CALLBACK\": callback,"
                                                           , (indent (idt + (indentDelta * 2))) ++ "\"OCCURRED-AT\": $to_mytimestamp(now()),"
                                                           , if isInSession then (indent (idt + (indentDelta * 2))) ++ "\"TRIGGER\": $session," else ""
-                                                          , generateEventArguments (idt + (indentDelta * 2)) ps
+                                                          , if length ps > 0 then (indent (idt + (indentDelta * 2))) ++ "\"PAYLOAD\": $data," else ""
                                                           , (indent (idt + (indentDelta * 1))) ++ "}"
                                                           , (indent idt) ++ "discard await ctx.queue_redis.xadd(queue, @args)"
                                                           , (indent idt) ++ "result = await check_result(ctx.cache_redis, tenant, callback, 0)"
