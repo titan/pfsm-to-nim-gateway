@@ -312,15 +312,56 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                                     _ => splitParameters' xs (p :: acc1) acc2
 
         generateGetJsonHandler : Nat -> Name -> Tipe -> String
-        generateGetJsonHandler idt n (TList _)   = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
-                                                                  , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, val.get.parseJson)"
-                                                                  ]
-        generateGetJsonHandler idt n (TDict _ _) = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
-                                                                  , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, val.get.parseJson)"
-                                                                  ]
-        generateGetJsonHandler idt n t           = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
-                                                                  , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, % " ++ (toNimFromString "val.get" t) ++ ")"
-                                                                  ]
+        generateGetJsonHandler idt n (TList (TPrimType PTLong))
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems: seq[string] = @[]"
+                           , (indent (idt + indentDelta)) ++ "for elem in val.get.parseJson:"
+                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems.add($elem.getBiggestInt)"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, %" ++ (toNimName n) ++ "_elems)"
+                           ]
+        generateGetJsonHandler idt n (TList (TPrimType PTULong))
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems: seq[string] = @[]"
+                           , (indent (idt + indentDelta)) ++ "for elem in val.get.parseJson:"
+                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems.add($cast[uint64](elem.getBiggestInt))"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, %" ++ (toNimName n) ++ "_elems)"
+                           ]
+        generateGetJsonHandler idt n (TList _)
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, val.get.parseJson)"
+                           ]
+        generateGetJsonHandler idt n (TDict _ (TPrimType PTLong))
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems: StringTableRef = newStringTable()"
+                           , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_vals = val.get.parseJson"
+                           , (indent (idt + indentDelta)) ++ "for key in " ++ (toNimName n) ++ "_vals:"
+                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems[key] = $" ++ (toNimName n) ++ "_vals[key].getBiggestInt"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, " ++ (toNimName n) ++ "_elems)"
+                           ]
+        generateGetJsonHandler idt n (TDict _ (TPrimType PTULong))
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems: StringTableRef = newStringTable()"
+                           , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_vals = val.get.parseJson"
+                           , (indent (idt + indentDelta)) ++ "for key in " ++ (toNimName n) ++ "_vals:"
+                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems[key] = $cast[uint64](" ++ (toNimName n) ++ "_vals[key].getBiggestInt)"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, " ++ (toNimName n) ++ "_elems)"
+                           ]
+        generateGetJsonHandler idt n (TDict _ _)
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, val.get.parseJson)"
+                           ]
+        generateGetJsonHandler idt n (TPrimType PTLong)
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, % " ++ "val.get(\"0\"))"
+                           ]
+        generateGetJsonHandler idt n (TPrimType PTULong)
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, % " ++ "val.get(\"0\"))"
+                           ]
+        generateGetJsonHandler idt n t
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, % " ++ (toNimFromString "val.get" t) ++ ")"
+                           ]
 
         generateGetReferenceJsonHandler : Nat -> Name -> Tipe -> String -> String
         generateGetReferenceJsonHandler idt n _ ref
