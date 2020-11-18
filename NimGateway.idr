@@ -288,7 +288,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
         generateFetchListByReference pre name defaultMiddleware (fname, _, _) funPostfix cachePostfix (MkState sname _ _ ms)
           = let mw = middleware defaultMiddleware ms
                 nimname = toNimName name
-                matchString = "^\/" ++ fname ++ "\/([0-9]+)\/" ++ name ++ "\/" ++ sname ++ "$"
+                matchString = "^\/" ++ fname ++ "\/([0-9]+)\/" ++ name ++ "\/" ++ sname ++ ".*$"
                 query = "/" ++ fname ++ "/$2/" ++ name ++ "/" ++ sname in
                 List.join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName sname) ++ "_" ++ nimname ++ "_list" ++ funPostfix ++ "_by_" ++ (toNimName fname) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                                       , (indent indentDelta) ++ "var matches: array[1, string]"
