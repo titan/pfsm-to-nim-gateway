@@ -56,7 +56,8 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
   where
     idFieldFilter : Parameter -> Bool
     idFieldFilter (_, _, ms) = case lookup "fsmid" ms of
-                                    Just (MVString "true") => True
+                                    Just (MVString "calc") => True
+                                    Just (MVString "copy") => True
                                     _ => False
 
     manyToOneFieldFilter : Parameter -> Bool
@@ -90,9 +91,19 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
 
     generateEventCalls : String -> String -> String -> List Parameter -> List1 Event -> String
     generateEventCalls pre name defaultMiddleware idfields es
-      = let fsmidcode = "generate_fsmid($tenant & \"-" ++ name ++ "-\" & " ++ (join " & " (map (\(n, t, _) => "$" ++ (toNimName n)) idfields)) ++ ")" in
+      = let fsmidcode = generateFsmId pre name idfields in
             List1.join "\n\n" $ map (generateEvent pre name fsmidcode) es
       where
+        generateFsmId : String -> String -> List Parameter -> String
+        generateFsmId pre name []
+          = "generate_fsmid($tenant & \"-" ++ name ++ "-\" & $now())"
+        generateFsmId pre name ((n, t, ms) :: [])
+          = case lookup "fsmid" ms of
+                 Just (MVString "copy") => toNimName n
+                 _ => "generate_fsmid($tenant & \"-" ++ name ++ "-\" & $" ++ (toNimName n) ++ ")"
+        generateFsmId pre name idfields
+          = "generate_fsmid($tenant & \"-" ++ name ++ "-\" & " ++ (join " & " (map (\(n, t, _) => "$" ++ (toNimName n)) idfields)) ++ ")"
+
         generateEvent : String -> String -> String -> Event -> String
         generateEvent pre name fsmidcode evt@(MkEvent n ps ms)
           = let style = fsmIdStyleOfEvent evt
