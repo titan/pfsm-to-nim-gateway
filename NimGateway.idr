@@ -42,10 +42,12 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
         display = displayName name metas
         idfields = filter idFieldFilter fsm.model
         manyToOneFields = filter manyToOneFieldFilter fsm.model
-        refereds = referenced fsm.model in
+        refereds = referenced fsm.model
+        records = liftRecords fsm.model in
         join "\n\n" $ List.filter nonblank [ generateImports refereds
                                            , "const queue = " ++ (show (name ++ "-input"))
                                            , generateEventCalls pre name mw idfields fsm.events
+                                           , generateDereferenceRecordFromJsons pre name records
                                            , generateGetJsonCall pre name fsm.model
                                            , generateFetchObject pre name mw fsm
                                            , generateFetchLists pre name mw fsm.states
@@ -67,15 +69,28 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                                      _ => False
                                            _ => False
 
+    referenceFilter : Parameter -> Bool
+    referenceFilter (_, _, metas)
+      = case lookup "reference" metas of
+             Just _ => True
+             _ => False
+
+
     referenced: List Parameter -> List Name
     referenced ps
       = referenced' ps []
       where
         referenced' : List Parameter -> List Name -> List Name
-        referenced' []                 acc = acc
-        referenced' ((_, _, ms) :: xs) acc = case lookup "reference" ms of
-                                                  Just (MVString dst) => referenced' xs (dst :: acc)
-                                                  _ => referenced' xs acc
+        referenced' []                                       acc = acc
+        referenced' ((_, (TRecord _ ps'), ms) :: xs)         acc = case lookup "reference" ms of
+                                                                       Just (MVString dst) => referenced' xs ((dst :: acc) ++ (referenced ps'))
+                                                                       _ => referenced' xs (acc ++ (referenced ps'))
+        referenced' ((_, (TList (TRecord _ ps')), ms) :: xs) acc = case lookup "reference" ms of
+                                                                        Just (MVString dst) => referenced' xs ((dst :: acc) ++ (referenced ps'))
+                                                                        _ => referenced' xs (acc ++ (referenced ps'))
+        referenced' ((_, _, ms) :: xs)                       acc = case lookup "reference" ms of
+                                                                        Just (MVString dst) => referenced' xs (dst :: acc)
+                                                                        _ => referenced' xs acc
 
     liftParticipantFromOutputAction : Action -> Maybe String
     liftParticipantFromOutputAction (OutputAction "add-to-state-list-of-participant"      (_ :: p :: _)) = Just (show p)
@@ -197,7 +212,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                              , (indent (indentDelta * 2)) ++ "let"
                                              , if fsmIdStyle == FsmIdStyleUrl then (indent (indentDelta * 3)) ++ "id = matches[0]" else ""
                                              , (indent (indentDelta * 3)) ++ "signbody = \"\""
-                                             , (indent (indentDelta * 2)) ++ if fsmIdStyle == FsmIdStyleSession then ("check_" ++ (toNimName mw) ++ "(request, ctx, \"GET|/" ++ name ++ "|$1\" % signbody, \"\"):") else ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "/$2|$1\" % [signbody, id], \"\"):")
+                                             , (indent (indentDelta * 2)) ++ if fsmIdStyle == FsmIdStyleSession then ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "|$1\" % signbody, \"\"):") else ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "/$2|$1\" % [signbody, id], \"\"):")
                                              , (indent (indentDelta * 3)) ++ "let"
                                              , if fsmIdStyle == FsmIdStyleSession then (indent (indentDelta * 4)) ++ "id = $session" else ""
                                              , (indent (indentDelta * 4)) ++ "key = \"tenant:\" & $tenant & \"#" ++ name ++ ":\" & id"
@@ -296,12 +311,15 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
       = List.join "\n\n" $ map (generateFetchListsByReference pre name defaultMiddleware states) manyToOneFields
       where
         generateFetchListByReference : String -> String -> String -> Parameter -> String -> String -> State -> String
-        generateFetchListByReference pre name defaultMiddleware (fname, _, _) funPostfix cachePostfix (MkState sname _ _ ms)
+        generateFetchListByReference pre name defaultMiddleware (fname, _, metas) funPostfix cachePostfix (MkState sname _ _ ms)
           = let mw = middleware defaultMiddleware ms
+                refname = case lookup "reference" metas of
+                               Just (MVString refname') => refname'
+                               _ => fname
                 nimname = toNimName name
-                matchString = "^\/" ++ fname ++ "\/([0-9]+)\/" ++ name ++ "\/" ++ sname ++ ".*$"
-                query = "/" ++ fname ++ "/$2/" ++ name ++ "/" ++ sname in
-                List.join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName sname) ++ "_" ++ nimname ++ "_list" ++ funPostfix ++ "_by_" ++ (toNimName fname) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
+                matchString = "^\/" ++ refname ++ "\/([0-9]+)\/" ++ name ++ "\/" ++ sname ++ ".*$"
+                query = "/" ++ refname ++ "/$2/" ++ name ++ "/" ++ sname in
+                List.join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName sname) ++ "_" ++ nimname ++ "_list" ++ funPostfix ++ "_by_" ++ (toNimName refname) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                                       , (indent indentDelta) ++ "var matches: array[1, string]"
                                                       , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and match(request.path.get(\"\"), re\"" ++ matchString ++ "\", matches):"
                                                       , (indent (indentDelta * 2)) ++ "let"
@@ -310,9 +328,9 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                       , (indent (indentDelta * 3)) ++ "offset   = parseInt(params.getOrDefault(\"offset\", \"0\"))"
                                                       , (indent (indentDelta * 3)) ++ "limit    = parseInt(params.getOrDefault(\"limit\", \"10\"))"
                                                       , (indent (indentDelta * 3)) ++ "signbody = @[\"limit=\" & $limit, \"offset=\" & $offset].join(\"&\")"
-                                                      , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"GET|" ++ query ++ "|$1\" % [signbody, rid], \"" ++ name ++ ":get-" ++ sname ++ "-list-by-" ++ fname ++ "\"):"
+                                                      , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"GET|" ++ query ++ "|$1\" % [signbody, rid], \"" ++ name ++ ":get-" ++ sname ++ "-list-by-" ++ refname ++ "\"):"
                                                       , (indent (indentDelta * 3)) ++ "let"
-                                                      , (indent (indentDelta * 4)) ++ "srckey = " ++ cachePostfix ++ " & \"#" ++ fname ++ ":\" & rid & \"#" ++ name ++ "." ++ sname ++ "\""
+                                                      , (indent (indentDelta * 4)) ++ "srckey = " ++ cachePostfix ++ " & \"#" ++ refname ++ ":\" & rid & \"#" ++ name ++ "." ++ sname ++ "\""
                                                       , (indent (indentDelta * 4)) ++ "total  = await ctx.cache_redis.zcard(srckey)"
                                                       , (indent (indentDelta * 4)) ++ "ids    = await ctx.cache_redis.zrevrange(srckey, offset, offset + limit - 1)"
                                                       , (indent (indentDelta * 3)) ++ "var items = newJArray()"
@@ -359,37 +377,69 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                  , participantCode
                                  ]
 
+    generateDereferenceRecordFromJsons : String -> String -> List Tipe -> String
+    generateDereferenceRecordFromJsons pre name ts
+      = join "\n\n" $ List.filter nonblank $ map generateDereferenceRecordFromJson ts
+      where
+        generateDereferenceRecordFromJson : Tipe -> String
+        generateDereferenceRecordFromJson (TRecord n ps)
+          = let refs = filter referenceFilter ps in
+                List.join "\n" [ "proc dereference_" ++ (toNimName n) ++ "_from_json(redis: AsyncRedis, tenant: uint64, data: JsonNode): Future[JsonNode] {.async.} ="
+                               , (indent indentDelta) ++ "result = data"
+                               , List.join "\n" $ map (generateDereferencedAttributeOfRecord indentDelta) refs
+                               ]
+          where
+            generateDereferencedAttributeOfRecord : Nat -> Parameter -> String
+            generateDereferencedAttributeOfRecord idt (n, (TPrimType PTULong), metas)
+              = let ref = case lookup "reference" metas of
+                               Just (MVString r) => r
+                               _ => n
+                               in
+                    List.join "\n" [ (indent idt) ++ "let"
+                                   , (indent (idt + indentDelta)) ++ (toNimName n) ++ "_fsmid = result[\"" ++ n ++ "\"].getStr"
+                                   , (indent (idt + indentDelta)) ++ (toNimName n) ++ "_key = \"tenant:\" & $tenant & \"#" ++ ref ++ ":\" & result[\"" ++ n ++ "\"].getStr"
+                                   , (indent (idt + indentDelta)) ++ (toNimName n) ++ "_opt = await get_" ++ (toNimName ref) ++ "_json(redis, tenant, " ++ (toNimName n) ++ "_key)"
+                                   , (indent idt) ++ "if " ++ (toNimName n) ++ "_opt.isSome:"
+                                   , (indent (idt + indentDelta)) ++ "let " ++ (toNimName n) ++ "_json = " ++ (toNimName n) ++ "_opt.get"
+                                   , (indent (idt + indentDelta)) ++ (toNimName n) ++ "_json.add \"fsmid\", % " ++ (toNimName n) ++ "_fsmid"
+                                   , (indent (idt + indentDelta)) ++ "result[\"" ++ n ++ "\"] = " ++ (toNimName n) ++ "_opt.get"
+                                   ]
+            generateDereferencedAttributeOfRecord idt _
+              = ""
+        generateDereferenceRecordFromJson _
+          = ""
+
     generateGetJsonCall : String -> String -> List Parameter -> String
     generateGetJsonCall pre name ps
       = let nimname = toNimName name
             (norms, refs) = splitParameters ps in
-            List.join "\n" $ List.filter nonblank [ "proc get_" ++ nimname ++ "_json*(redis: AsyncRedis, tenant: uint64, key: string): Future[Option[JsonNode]] {.async.} ="
-                                                  , (indent indentDelta) ++ "let"
-                                                  , (indent (indentDelta * 2)) ++ "fields = @[" ++ (join ", " (map (\(n, _, _) => (show . toUpper) n) ps)) ++ "]"
-                                                  , (indent (indentDelta * 2)) ++ "values = await redis.hmget(key, fields)"
-                                                  , (indent indentDelta) ++ "var"
-                                                  , (indent (indentDelta * 2)) ++ "payload = newJObject()"
-                                                  , (indent (indentDelta * 2)) ++ "nilcount = 0"
-                                                  , (indent (indentDelta * 2)) ++ "idx = 0"
-                                                  , (indent indentDelta) ++ "for val in values:"
-                                                  , (indent (indentDelta * 2)) ++ "if val.isSome:"
-                                                  , (indent (indentDelta * 3)) ++ "case fields[idx]:"
-                                                  , join "\n" $ map (\(n, t, _) => generateGetJsonHandler (indentDelta * 4) n t) norms
-                                                  , join "\n" $ map (\((n, t, _), r) => generateGetReferenceJsonHandler (indentDelta * 4) n t r) refs
-                                                  , (indent (indentDelta * 4)) ++ "else:"
-                                                  , (indent (indentDelta * 5)) ++ "payload.add(fields[idx].toLowerAscii, % val.get)"
-                                                  , (indent (indentDelta * 2)) ++ "else:"
-                                                  , (indent (indentDelta * 3)) ++ "case fields[idx]:"
-                                                  , join "\n" $ map (\(n, t, _) => generateDefaultGetJsonHandler (indentDelta * 4) n t) ps
-                                                  , (indent (indentDelta * 4)) ++ "else:"
-                                                  , (indent (indentDelta * 5)) ++ "payload.add(fields[idx].toLowerAscii, % \"\")"
-                                                  , (indent (indentDelta * 3)) ++ "nilcount += 1"
-                                                  , (indent (indentDelta * 2)) ++ "idx += 1"
-                                                  , (indent indentDelta) ++ "if len(values) == nilcount:"
-                                                  , (indent (indentDelta * 2)) ++ "result = none(JsonNode)"
-                                                  , (indent indentDelta) ++ "else:"
-                                                  , (indent (indentDelta * 2)) ++ "result = some[JsonNode](payload)"
-                                                  ]
+            join "\n" $ List.filter nonblank [ "proc get_" ++ nimname ++ "_json*(redis: AsyncRedis, tenant: uint64, key: string): Future[Option[JsonNode]] {.async.} ="
+                                             , (indent indentDelta) ++ "let"
+                                             , (indent (indentDelta * 2)) ++ "fields = @[" ++ (join ", " (map (\(n, _, _) => (show . toUpper) n) ps)) ++ "]"
+                                             , (indent (indentDelta * 2)) ++ "values = await redis.hmget(key, fields)"
+                                             , (indent indentDelta) ++ "var"
+                                             , (indent (indentDelta * 2)) ++ "payload = newJObject()"
+                                             , (indent (indentDelta * 2)) ++ "nilcount = 0"
+                                             , (indent (indentDelta * 2)) ++ "idx = 0"
+                                             , (indent indentDelta) ++ "for val in values:"
+                                             , (indent (indentDelta * 2)) ++ "if val.isSome:"
+                                             , (indent (indentDelta * 3)) ++ "case fields[idx]:"
+                                             , join "\n" $ map (\(n, t, _) => generateGetJsonHandler (indentDelta * 4) n t) norms
+                                             , join "\n" $ map (\((n, t, _), r) => generateGetReferenceJsonHandler (indentDelta * 4) n t r) refs
+                                             , (indent (indentDelta * 4)) ++ "else:"
+                                             , (indent (indentDelta * 5)) ++ "payload.add(fields[idx].toLowerAscii, % val.get)"
+                                             , (indent (indentDelta * 2)) ++ "else:"
+                                             , (indent (indentDelta * 3)) ++ "case fields[idx]:"
+                                             , join "\n" $ map (\(n, t, _) => generateDefaultGetJsonHandler (indentDelta * 4) n t) ps
+                                             , (indent (indentDelta * 4)) ++ "else:"
+                                             , (indent (indentDelta * 5)) ++ "payload.add(fields[idx].toLowerAscii, % \"\")"
+                                             , (indent (indentDelta * 3)) ++ "nilcount += 1"
+                                             , (indent (indentDelta * 2)) ++ "idx += 1"
+                                             , (indent indentDelta) ++ "if len(values) == nilcount:"
+                                             , (indent (indentDelta * 2)) ++ "result = none(JsonNode)"
+                                             , (indent indentDelta) ++ "else:"
+                                             , (indent (indentDelta * 2)) ++ "result = some[JsonNode](payload)"
+                                             ]
       where
         splitParameters : List Parameter -> (List Parameter, List (Parameter, String))
         splitParameters ps
@@ -406,16 +456,28 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
           = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
                            , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems: seq[string] = @[]"
                            , (indent (idt + indentDelta)) ++ "for elem in val.get.parseJson:"
-                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems.add($elem.getBiggestInt)"
+                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems.add(elem.getStr(\"0\").parseBiggestInt)"
                            , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, %" ++ (toNimName n) ++ "_elems)"
                            ]
         generateGetJsonHandler idt n (TList (TPrimType PTULong))
           = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
                            , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems: seq[string] = @[]"
                            , (indent (idt + indentDelta)) ++ "for elem in val.get.parseJson:"
-                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems.add($cast[uint64](elem.getBiggestInt))"
+                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems.add(elem.getStr(\"0\").parseBiggestUInt)"
                            , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, %" ++ (toNimName n) ++ "_elems)"
                            ]
+        generateGetJsonHandler idt n (TList (TRecord rn ps))
+          = let refs = filter referenceFilter ps in
+                if length refs == 0
+                   then List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                                       , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, % " ++ "val.get.parseJson)"
+                                       ]
+                   else List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                                       , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems = newJArray()"
+                                       , (indent (idt + indentDelta)) ++ "for elem in val.get.parseJson:"
+                                       , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems.add(await dereference_" ++ (toNimName rn) ++ "_from_json(redis, tenant, elem))"
+                                       , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, %" ++ (toNimName n) ++ "_elems)"
+                                       ]
         generateGetJsonHandler idt n (TList _)
           = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
                            , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, val.get.parseJson)"
@@ -425,7 +487,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                            , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems: StringTableRef = newStringTable()"
                            , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_vals = val.get.parseJson"
                            , (indent (idt + indentDelta)) ++ "for key in " ++ (toNimName n) ++ "_vals:"
-                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems[key] = $" ++ (toNimName n) ++ "_vals[key].getBiggestInt"
+                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems[key] = $" ++ (toNimName n) ++ "_vals[key].getStr(\"0\").parseBiggestInt"
                            , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, " ++ (toNimName n) ++ "_elems)"
                            ]
         generateGetJsonHandler idt n (TDict _ (TPrimType PTULong))
@@ -433,7 +495,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                            , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems: StringTableRef = newStringTable()"
                            , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_vals = val.get.parseJson"
                            , (indent (idt + indentDelta)) ++ "for key in " ++ (toNimName n) ++ "_vals:"
-                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems[key] = $cast[uint64](" ++ (toNimName n) ++ "_vals[key].getBiggestInt)"
+                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems[key] = $" ++ (toNimName n) ++ "_vals[key].getStr(\"0\").parseBiggestInt"
                            , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, " ++ (toNimName n) ++ "_elems)"
                            ]
         generateGetJsonHandler idt n (TDict _ _)
@@ -454,6 +516,32 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                            ]
 
         generateGetReferenceJsonHandler : Nat -> Name -> Tipe -> String -> String
+        generateGetReferenceJsonHandler idt n (TList (TPrimType PTLong)) ref
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems = newJArray()"
+                           , (indent (idt + indentDelta)) ++ "for elem in val.get.parseJson:"
+                           , (indent (idt + indentDelta * 2)) ++ "let"
+                           , (indent (idt + indentDelta * 3)) ++ "key = \"tenant:\" & $tenant & \"#" ++ ref ++ ":\" & elem.getStr(\"0\")"
+                           , (indent (idt + indentDelta * 3)) ++ (toNimName n) ++ "_opt" ++ " = await get_" ++ (toNimName ref) ++ "_json(redis, tenant, key)"
+                           , (indent (idt + indentDelta * 2)) ++ "if " ++ (toNimName n) ++ "_opt.isSome:"
+                           , (indent (idt + indentDelta * 3)) ++ "let " ++ (toNimName n) ++ " = " ++ (toNimName n) ++ "_opt.get"
+                           , (indent (idt + indentDelta * 3)) ++ (toNimName n) ++ ".add(\"fsmid\", elem)"
+                           , (indent (idt + indentDelta * 3)) ++ (toNimName n) ++ "_elems.add(" ++ (toNimName n) ++ ")"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, " ++ (toNimName n) ++ "_elems)"
+                           ]
+        generateGetReferenceJsonHandler idt n (TList (TPrimType PTULong)) ref
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems = newJArray()"
+                           , (indent (idt + indentDelta)) ++ "for elem in val.get.parseJson:"
+                           , (indent (idt + indentDelta * 2)) ++ "let"
+                           , (indent (idt + indentDelta * 3)) ++ "key = \"tenant:\" & $tenant & \"#" ++ ref ++ ":\" & elem.getStr(\"0\")"
+                           , (indent (idt + indentDelta * 3)) ++ (toNimName n) ++ "_opt" ++ " = await get_" ++ (toNimName ref) ++ "_json(redis, tenant, key)"
+                           , (indent (idt + indentDelta * 2)) ++ "if " ++ (toNimName n) ++ "_opt.isSome:"
+                           , (indent (idt + indentDelta * 3)) ++ "let " ++ (toNimName n) ++ " = " ++ (toNimName n) ++ "_opt.get"
+                           , (indent (idt + indentDelta * 3)) ++ (toNimName n) ++ ".add(\"fsmid\", elem)"
+                           , (indent (idt + indentDelta * 3)) ++ (toNimName n) ++ "_elems.add(" ++ (toNimName n) ++ ")"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, " ++ (toNimName n) ++ "_elems)"
+                           ]
         generateGetReferenceJsonHandler idt n _ ref
           = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
                            , (indent (idt + indentDelta)) ++ "let"
@@ -531,10 +619,14 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                    else (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName sname) ++ "_" ++ (toNimName name) ++ "_list)"
 
             generateStateCallByReference : Nat -> String -> String -> Participant -> Parameter  -> State -> String
-            generateStateCallByReference idt pre name p@(MkParticipant pname _) (fname, _, _) s@(MkState sname _ _ _)
-              = if isMatchParticipant p s
-                   then (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName sname) ++ "_" ++ (toNimName name) ++ "_list_of_" ++ (toNimName pname) ++ "_by_" ++ (toNimName fname) ++ ")"
-                   else (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName sname) ++ "_" ++ (toNimName name) ++ "_list_by_" ++ (toNimName fname) ++ ")"
+            generateStateCallByReference idt pre name p@(MkParticipant pname _) (fname, _, metas) s@(MkState sname _ _ _)
+              = let refname = case lookup "reference" metas of
+                                   Just (MVString refname') => refname'
+                                   _ => fname
+                    in
+                    if isMatchParticipant p s
+                       then (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName sname) ++ "_" ++ (toNimName name) ++ "_list_of_" ++ (toNimName pname) ++ "_by_" ++ (toNimName refname) ++ ")"
+                       else (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName sname) ++ "_" ++ (toNimName name) ++ "_list_by_" ++ (toNimName refname) ++ ")"
 
     generatePermissions : String -> String -> String -> List1 State -> List1 Transition -> List1 Participant -> List Parameter -> String
     generatePermissions pre name display states transitions participants fields
@@ -566,7 +658,11 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
 
             generateStatePermissionsByReference : Nat -> String -> String -> Participant -> Parameter -> State -> String
             generateStatePermissionsByReference idt pre name p@(MkParticipant pname _) (fname, _, fmetas) s@(MkState sname _ _ smetas)
-              = (indent idt) ++ "(\"" ++ "根据" ++ (displayName fname fmetas) ++ "获取" ++ (displayName sname smetas) ++ "列表" ++ "\", " ++ (show (name ++ ":get-" ++ sname ++ "-list-by-" ++ fname)) ++ ")"
+              = let refname = case lookup "reference" fmetas of
+                                   Just (MVString refname') => refname'
+                                   _ => fname
+                    in
+                    (indent idt) ++ "(\"" ++ "根据" ++ (displayName refname fmetas) ++ "获取" ++ (displayName sname smetas) ++ "列表" ++ "\", " ++ (show (name ++ ":get-" ++ sname ++ "-list-by-" ++ refname)) ++ ")"
 
 loadFsm : String -> Either String Fsm
 loadFsm src
