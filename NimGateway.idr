@@ -179,6 +179,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
 
                                                           , (indent (idt + (indentDelta * 1))) ++ "args = {"
                                                           , (indent (idt + (indentDelta * 2))) ++ "\"TENANT\": $tenant,"
+                                                          , (indent (idt + (indentDelta * 2))) ++ "\"DOMAIN\": $domain,"
                                                           , (indent (idt + (indentDelta * 2))) ++ "\"GATEWAY\": ctx.gateway,"
                                                           , (indent (idt + (indentDelta * 2))) ++ "\"TASK\": \"PLAY-EVENT\","
                                                           , (indent (idt + (indentDelta * 2))) ++ "\"FSMID\": $fsmid,"
