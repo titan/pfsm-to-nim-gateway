@@ -299,7 +299,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
         generateFetchListOfParticipant' : String -> String -> String -> State -> List Action -> String
         generateFetchListOfParticipant' pre name defaultMiddleware state as
           = let participants = map (fromMaybe "") $ filter isJust $ map liftParticipantFromOutputAction as in
-                List.join "\n\n" $ nub $ map (\p => generateFetchList pre name defaultMiddleware ("_of_" ++ p) ("\"tenant:\" & $tenant & \"#" ++ p ++ ":\" & $session") state) participants
+                List.join "\n\n" $ nub $ map (\p => generateFetchList pre name defaultMiddleware ("_of_" ++ p) ("\"tenant:\" & $tenant & \"#" ++ p ++ ":\" & $domain") state) participants
 
         generateFetchListOfParticipant : String -> String -> String -> State -> String
         generateFetchListOfParticipant pre name dmw state@(MkState _ (Just enas) (Just exas) _) = generateFetchListOfParticipant' pre name dmw state (enas ++ exas)
