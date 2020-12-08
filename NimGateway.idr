@@ -259,9 +259,10 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
         generateFetchList : String -> String -> String -> String -> String -> State -> String
         generateFetchList pre name defaultMiddleware funPostfix cachePostfix (MkState n _ _ ms)
           = let mw = middleware defaultMiddleware ms
+                path = "/" ++ name ++ "/" ++ n
                 nimname = toNimName name in
                 List.join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName n) ++ "_" ++ nimname ++ "_list" ++ funPostfix ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
-                                                      , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and request.path.get(\"\").startsWith(\"/" ++ name ++ "/" ++ n ++ "\"):"
+                                                      , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and (request.path.get(\"\") == \"" ++ path ++ "\" or request.path.get(\"\").startsWith(\"" ++ path ++ "?\")):"
                                                       , (indent (indentDelta * 2)) ++ "let"
                                                       , (indent (indentDelta * 3)) ++ "params   = request.params"
                                                       , (indent (indentDelta * 3)) ++ "offset   = parseInt(params.getOrDefault(\"offset\", \"0\"))"
