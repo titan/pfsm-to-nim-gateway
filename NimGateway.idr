@@ -199,7 +199,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                  , if fsmIdStyle == FsmIdStyleUrl then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
                                                  , generateGetEventArguments (idt + indentDelta) ps
                                                  , generateSignatureBody (idt + indentDelta) ps
-                                                 , (indent idt) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if fsmIdStyle == FsmIdStyleUrl then [name, "$2", ename] else [name, ename])) ++ (if fsmIdStyle == FsmIdStyleUrl then "|$1\" % [signbody, id], \"" ++ name ++ ":" ++ ename ++ "\"):" else "|$1\" % signbody, \"" ++ name ++ ":" ++ ename ++ "\"):")
+                                                 , (indent idt) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if fsmIdStyle == FsmIdStyleUrl then [name, "$2", ename] else [name, ename])) ++ (if fsmIdStyle == FsmIdStyleUrl then "|$1\" % [signbody, id], \"" ++ name ++ ":" ++ ename ++ "\"):" else "|\" & signbody, \"" ++ name ++ ":" ++ ename ++ "\"):")
                                                  , generateMainBody (idt + indentDelta) fsmidcode n fsmIdStyle mw ps
                                                  ]
 
@@ -213,7 +213,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                              , (indent (indentDelta * 2)) ++ "let"
                                              , if fsmIdStyle == FsmIdStyleUrl then (indent (indentDelta * 3)) ++ "id = matches[0]" else ""
                                              , (indent (indentDelta * 3)) ++ "signbody = \"\""
-                                             , (indent (indentDelta * 2)) ++ if fsmIdStyle == FsmIdStyleSession then ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "|$1\" % signbody, \"\"):") else ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "/$2|$1\" % [signbody, id], \"\"):")
+                                             , (indent (indentDelta * 2)) ++ if fsmIdStyle == FsmIdStyleSession then ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "|\" & signbody, \"\"):") else ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "/$2|$1\" % [signbody, id], \"\"):")
                                              , (indent (indentDelta * 3)) ++ "let"
                                              , if fsmIdStyle == FsmIdStyleSession then (indent (indentDelta * 4)) ++ "id = $session" else ""
                                              , (indent (indentDelta * 4)) ++ "key = \"tenant:\" & $tenant & \"#" ++ name ++ ":\" & id"
@@ -268,7 +268,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                       , (indent (indentDelta * 3)) ++ "offset   = parseInt(params.getOrDefault(\"offset\", \"0\"))"
                                                       , (indent (indentDelta * 3)) ++ "limit    = parseInt(params.getOrDefault(\"limit\", \"10\"))"
                                                       , (indent (indentDelta * 3)) ++ "signbody = @[\"limit=\" & $limit, \"offset=\" & $offset].join(\"&\")"
-                                                      , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"GET|/" ++ name ++ "/" ++ n ++ "|$1\" % signbody, \"" ++ name ++ ":get-" ++ n ++ "-list" ++ "\"):"
+                                                      , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"GET|" ++ path ++ "|\" & signbody, \"" ++ name ++ ":get-" ++ n ++ "-list" ++ "\"):"
                                                       , (indent (indentDelta * 3)) ++ "let"
                                                       , (indent (indentDelta * 4)) ++ "srckey = " ++ cachePostfix ++ " & \"#" ++ name ++ "." ++ n ++ "\""
                                                       , (indent (indentDelta * 4)) ++ "total  = await ctx.cache_redis.zcard(srckey)"
@@ -565,8 +565,8 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
         defaultValue (TPrimType PTUShort) = "0'u16"
         defaultValue (TPrimType PTInt)    = "0"
         defaultValue (TPrimType PTUInt)   = "0'u32"
-        defaultValue (TPrimType PTLong)   = "0'i64"
-        defaultValue (TPrimType PTULong)  = "0'u64"
+        defaultValue (TPrimType PTLong)   = "\"0\""
+        defaultValue (TPrimType PTULong)  = "\"0\""
         defaultValue (TPrimType PTReal)   = "0.0"
         defaultValue (TPrimType PTString) = "\"\""
         defaultValue (TList _)            = "@[]"
