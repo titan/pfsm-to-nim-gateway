@@ -716,7 +716,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
         indexStateForParticipantFilter : State -> Bool
         indexStateForParticipantFilter state
           = let actions = liftActionsFromState state
-                outputActions = map indexOutputActionOfParticipantFilter actions in
+                outputActions = filter indexOutputActionOfParticipantFilter actions in
                 length outputActions > 0
 
         generateStateSearchOfParticipantWithActions : String -> String -> String -> String -> List Action -> String
