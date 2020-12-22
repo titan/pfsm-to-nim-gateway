@@ -68,14 +68,6 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
              Just (MVString "copy") => True
              _ => False
 
-    manyToOneFieldFilter : Parameter -> Bool
-    manyToOneFieldFilter (_, _, ms)
-      = case lookup "reference" ms of
-             Just (MVString _) => case lookup "mapping" ms of
-                                       Just (MVString "many-to-one") => True
-                                       _ => False
-             _ => False
-
     referenceFilter : Parameter -> Bool
     referenceFilter (_, _, metas)
       = case lookup "reference" metas of
