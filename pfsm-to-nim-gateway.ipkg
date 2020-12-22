@@ -1,6 +1,6 @@
 package pfsm-to-nim-gateway
 
-depends = contrib, pfsm
+depends = contrib, pfsm, pfsm-service2-base
 main = NimGateway
 executable = pfsm-to-nim-gateway
 

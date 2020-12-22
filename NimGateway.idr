@@ -14,6 +14,7 @@ import Pfsm.Checker
 import Pfsm.Data
 import Pfsm.Parser
 import Pfsm.Nim
+import Pfsm.Service2
 
 indentDelta : Nat
 indentDelta = 2
@@ -81,32 +82,6 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
              Just _ => True
              _ => False
 
-    listOutputActionFilter : Action -> Bool
-    listOutputActionFilter (OutputAction "add-to-state-list" _)      = True
-    listOutputActionFilter (OutputAction "remove-from-state-list" _) = True
-    listOutputActionFilter _                                         = False
-
-    liftStateNameFromListOutputAction : Action -> Maybe String
-    liftStateNameFromListOutputAction (OutputAction "add-to-state-list" (sname :: _))      = Just (show sname)
-    liftStateNameFromListOutputAction (OutputAction "remove-from-state-list" (sname :: _)) = Just (show sname)
-    liftStateNameFromListOutputAction _                                                    = Nothing
-
-    listOutputActionOfParticipantFilter : Action -> Bool
-    listOutputActionOfParticipantFilter (OutputAction "add-to-state-list-of-participant" _)      = True
-    listOutputActionOfParticipantFilter (OutputAction "remove-from-state-list-of-participant" _) = True
-    listOutputActionOfParticipantFilter _                                                        = False
-
-    liftStateNameFromListOutputActionOfParticipant : Action -> Maybe (String, String)
-    liftStateNameFromListOutputActionOfParticipant (OutputAction "add-to-state-list-of-participant" (pname :: _ :: sname :: _))      = Just (show sname, show pname)
-    liftStateNameFromListOutputActionOfParticipant (OutputAction "remove-from-state-list-of-participant" (pname :: _ :: sname :: _)) = Just (show sname, show pname)
-    liftStateNameFromListOutputActionOfParticipant _                                                                                 = Nothing
-
-    isSearchable : Maybe (List Meta) -> Bool
-    isSearchable metas
-      = case lookup "gateway.searchable" metas of
-             Just (MVString "true") => True
-             _ => False
-
     referenced: List Parameter -> List Name
     referenced ps
       = referenced' ps []
@@ -122,94 +97,6 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
         referenced' ((_, _, ms) :: xs)                       acc = case lookup "reference" ms of
                                                                         Just (MVString dst) => referenced' xs (dst :: acc)
                                                                         _ => referenced' xs acc
-
-    liftParticipantFromOutputAction : Action -> Maybe String
-    liftParticipantFromOutputAction (OutputAction "add-to-state-list-of-participant"      (p :: _)) = Just (show p)
-    liftParticipantFromOutputAction (OutputAction "remove-from-state-list-of-participant" (p :: _)) = Just (show p)
-    liftParticipantFromOutputAction (OutputAction "push-to-state-index-of-participant"    (p :: _)) = Just (show p)
-    liftParticipantFromOutputAction (OutputAction "flush-to-state-index-of-participant"   (p :: _)) = Just (show p)
-    liftParticipantFromOutputAction _                                                               = Nothing
-
-    liftActionsFromTrigger : Trigger -> List Action
-    liftActionsFromTrigger (MkTrigger _ _ _ (Just actions)) = List1.toList actions
-    liftActionsFromTrigger (MkTrigger _ _ _ Nothing)        = []
-
-    liftActionsFromTransition : Transition -> List Action
-    liftActionsFromTransition (MkTransition _ _ triggers)
-      = flatten $ map liftActionsFromTrigger $ List1.toList triggers
-
-    indexOutputActionFilter : Action -> Bool
-    indexOutputActionFilter (OutputAction "push-to-state-index" _)  = True
-    indexOutputActionFilter (OutputAction "flush-to-state-index" _) = True
-    indexOutputActionFilter _                                       = False
-
-    indexOutputActionOfParticipantFilter : Action -> Bool
-    indexOutputActionOfParticipantFilter (OutputAction "push-to-state-index-of-participant" _)    = True
-    indexOutputActionOfParticipantFilter (OutputAction "flush-to-state-index-of-participant" _)   = True
-    indexOutputActionOfParticipantFilter _                                                        = False
-
-    liftStateNameFromIndexOutputAction : Action -> Maybe String
-    liftStateNameFromIndexOutputAction (OutputAction "push-to-state-index" (sname :: _))  = Just (show sname)
-    liftStateNameFromIndexOutputAction (OutputAction "flush-to-state-index" (sname :: _)) = Just (show sname)
-    liftStateNameFromIndexOutputAction _                                                  = Nothing
-
-    liftStateNameFromIndexOutputActionOfParticipant : Action -> Maybe (String, String)
-    liftStateNameFromIndexOutputActionOfParticipant (OutputAction "push-to-state-index-of-participant" (pname :: _ :: sname :: _))    = Just (show sname, show pname)
-    liftStateNameFromIndexOutputActionOfParticipant (OutputAction "flush-to-state-index-of-participant" (pname :: _ :: sname :: _))   = Just (show sname, show pname)
-    liftStateNameFromIndexOutputActionOfParticipant _                                                                                 = Nothing
-
-    derefState : String -> List1 State -> State
-    derefState sname states
-      = let filtered = filter (\s => s.name == sname) states in
-            if length filtered > 0
-               then fromMaybe (head states) $ head' filtered
-               else head states
-
-    liftActionsFromState : State -> List Action
-    liftActionsFromState (MkState _ (Just enas) (Just exas) _) = enas ++ exas
-    liftActionsFromState (MkState _ (Just enas) Nothing     _) = enas
-    liftActionsFromState (MkState _ Nothing     (Just exas) _) = exas
-    liftActionsFromState (MkState _ Nothing     Nothing _)     = []
-
-    listStateForParticipantFilter : State -> Bool
-    listStateForParticipantFilter state
-      = let actions = liftActionsFromState state
-            actions' = filter listOutputActionOfParticipantFilter actions in
-            length actions' > 0
-
-    liftActionsFromFsm : List1 State -> List1 Transition -> List Action
-    liftActionsFromFsm states transitions
-      = let stateActions = flatten $ map liftActionsFromState $ List1.toList states
-            transitionActions = flatten $ map liftActionsFromTransition $ List1.toList transitions in
-            transitionActions ++ stateActions
-
-    liftListStates : List1 State -> List1 Transition -> List State
-    liftListStates states transitions
-      = let actions = liftActionsFromFsm states transitions
-            listActions = filter listOutputActionFilter actions
-            stateNames = nub $ filter nonblank $ map (fromMaybe "") $ map liftStateNameFromListOutputAction listActions in
-            filter (\s => elem s.name stateNames) states
-
-    liftListStatesOfParticipants : List1 State -> List1 Transition -> List (State, String)
-    liftListStatesOfParticipants states transitions
-      = let actions = liftActionsFromFsm states transitions
-            listActions = filter listOutputActionOfParticipantFilter actions
-            pairs = nub $ filter (\(sname, pname) => sname /= "" && pname /= "") $ map (\x => case x of Just x' => x'; _ => ("", "")) $ map liftStateNameFromListOutputActionOfParticipant listActions in
-            map (\(sname, pname) => ((derefState sname states), pname)) pairs
-
-    liftIndexStates : List1 State -> List1 Transition -> List State
-    liftIndexStates states transitions
-      = let actions = liftActionsFromFsm states transitions
-            indexActions = filter indexOutputActionFilter actions
-            stateNames = nub $ filter nonblank $ map (fromMaybe "") $ map liftStateNameFromIndexOutputAction indexActions in
-            filter (\s => elem s.name stateNames) states
-
-    liftIndexStatesOfParticipants : List1 State -> List1 Transition -> List (State, String)
-    liftIndexStatesOfParticipants states transitions
-      = let actions = liftActionsFromFsm states transitions
-            indexActions = filter indexOutputActionOfParticipantFilter actions
-            pairs = nub $ filter (\(sname, pname) => sname /= "" && pname /= "") $ map (\x => case x of Just x' => x'; _ => ("", "")) $ map liftStateNameFromIndexOutputActionOfParticipant indexActions in
-            map (\(sname, pname) => ((derefState sname states), pname)) pairs
 
     generateImports : List Name -> String
     generateImports refereds
