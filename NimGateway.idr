@@ -51,10 +51,10 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                            , generateDereferenceRecordFromJsons pre name records
                                            , generateGetJsonCall pre name fsm.model
                                            , generateFetchObject pre name mw fsm
-                                           , generateFetchLists pre name mw fsm.states
-                                           , generateFetchListsByReferences pre name mw fsm.states manyToOneFields
+                                           , generateFetchLists pre name mw fsm.states fsm.transitions
+                                           , generateFetchListsByReferences pre name mw fsm.states fsm.transitions manyToOneFields
                                            , if searchable
-                                                then generateStateSearchs pre name mw fsm.states
+                                                then generateStateSearchs pre name mw fsm.states fsm.transitions
                                                 else ""
                                            , generateRouters pre name fsm.states fsm.transitions fsm.participants manyToOneFields searchable
                                            , generatePermissions pre name display fsm.states fsm.transitions fsm.participants manyToOneFields searchable
@@ -86,10 +86,20 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
     listOutputActionFilter (OutputAction "remove-from-state-list" _) = True
     listOutputActionFilter _                                         = False
 
+    liftStateNameFromListOutputAction : Action -> Maybe String
+    liftStateNameFromListOutputAction (OutputAction "add-to-state-list" (sname :: _))      = Just (show sname)
+    liftStateNameFromListOutputAction (OutputAction "remove-from-state-list" (sname :: _)) = Just (show sname)
+    liftStateNameFromListOutputAction _                                                    = Nothing
+
     listOutputActionOfParticipantFilter : Action -> Bool
     listOutputActionOfParticipantFilter (OutputAction "add-to-state-list-of-participant" _)      = True
     listOutputActionOfParticipantFilter (OutputAction "remove-from-state-list-of-participant" _) = True
     listOutputActionOfParticipantFilter _                                                        = False
+
+    liftStateNameFromListOutputActionOfParticipant : Action -> Maybe (String, String)
+    liftStateNameFromListOutputActionOfParticipant (OutputAction "add-to-state-list-of-participant" (pname :: _ :: sname :: _))      = Just (show sname, show pname)
+    liftStateNameFromListOutputActionOfParticipant (OutputAction "remove-from-state-list-of-participant" (pname :: _ :: sname :: _)) = Just (show sname, show pname)
+    liftStateNameFromListOutputActionOfParticipant _                                                                                 = Nothing
 
     isSearchable : Maybe (List Meta) -> Bool
     isSearchable metas
@@ -124,6 +134,10 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
     liftActionsFromTrigger (MkTrigger _ _ _ (Just actions)) = List1.toList actions
     liftActionsFromTrigger (MkTrigger _ _ _ Nothing)        = []
 
+    liftActionsFromTransition : Transition -> List Action
+    liftActionsFromTransition (MkTransition _ _ triggers)
+      = flatten $ map liftActionsFromTrigger $ List1.toList triggers
+
     indexOutputActionFilter : Action -> Bool
     indexOutputActionFilter (OutputAction "push-to-state-index" _)  = True
     indexOutputActionFilter (OutputAction "flush-to-state-index" _) = True
@@ -144,6 +158,13 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
     liftStateNameFromIndexOutputActionOfParticipant (OutputAction "flush-to-state-index-of-participant" (pname :: _ :: sname :: _))   = Just (show sname, show pname)
     liftStateNameFromIndexOutputActionOfParticipant _                                                                                 = Nothing
 
+    derefState : String -> List1 State -> State
+    derefState sname states
+      = let filtered = filter (\s => s.name == sname) states in
+            if length filtered > 0
+               then fromMaybe (head states) $ head' filtered
+               else head states
+
     liftActionsFromState : State -> List Action
     liftActionsFromState (MkState _ (Just enas) (Just exas) _) = enas ++ exas
     liftActionsFromState (MkState _ (Just enas) Nothing     _) = enas
@@ -155,6 +176,40 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
       = let actions = liftActionsFromState state
             actions' = filter listOutputActionOfParticipantFilter actions in
             length actions' > 0
+
+    liftActionsFromFsm : List1 State -> List1 Transition -> List Action
+    liftActionsFromFsm states transitions
+      = let stateActions = flatten $ map liftActionsFromState $ List1.toList states
+            transitionActions = flatten $ map liftActionsFromTransition $ List1.toList transitions in
+            transitionActions ++ stateActions
+
+    liftListStates : List1 State -> List1 Transition -> List State
+    liftListStates states transitions
+      = let actions = liftActionsFromFsm states transitions
+            listActions = filter listOutputActionFilter actions
+            stateNames = nub $ filter nonblank $ map (fromMaybe "") $ map liftStateNameFromListOutputAction listActions in
+            filter (\s => elem s.name stateNames) states
+
+    liftListStatesOfParticipants : List1 State -> List1 Transition -> List (State, String)
+    liftListStatesOfParticipants states transitions
+      = let actions = liftActionsFromFsm states transitions
+            listActions = filter listOutputActionOfParticipantFilter actions
+            pairs = nub $ filter (\(sname, pname) => sname /= "" && pname /= "") $ map (\x => case x of Just x' => x'; _ => ("", "")) $ map liftStateNameFromListOutputActionOfParticipant listActions in
+            map (\(sname, pname) => ((derefState sname states), pname)) pairs
+
+    liftIndexStates : List1 State -> List1 Transition -> List State
+    liftIndexStates states transitions
+      = let actions = liftActionsFromFsm states transitions
+            indexActions = filter indexOutputActionFilter actions
+            stateNames = nub $ filter nonblank $ map (fromMaybe "") $ map liftStateNameFromIndexOutputAction indexActions in
+            filter (\s => elem s.name stateNames) states
+
+    liftIndexStatesOfParticipants : List1 State -> List1 Transition -> List (State, String)
+    liftIndexStatesOfParticipants states transitions
+      = let actions = liftActionsFromFsm states transitions
+            indexActions = filter indexOutputActionOfParticipantFilter actions
+            pairs = nub $ filter (\(sname, pname) => sname /= "" && pname /= "") $ map (\x => case x of Just x' => x'; _ => ("", "")) $ map liftStateNameFromIndexOutputActionOfParticipant indexActions in
+            map (\(sname, pname) => ((derefState sname states), pname)) pairs
 
     generateImports : List Name -> String
     generateImports refereds
@@ -293,28 +348,27 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                              , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                                              ]
 
-    generateFetchLists : String -> String -> String -> List1 State -> String
-    generateFetchLists pre name defaultMiddleware ss
-      = let normalCode = List1.join "\n\n" $ map (generateFetchList pre name defaultMiddleware "" "\"tenant:\" & $tenant") ss
-            participantStates = filter listStateForParticipantFilter ss
-            participantCode = List.join "\n\n" $ map (generateFetchListOfParticipant pre name defaultMiddleware) participantStates in
-            List.join "\n\n" [ normalCode
-                             , participantCode
-                             ]
+    generateFetchLists : String -> String -> String -> List1 State -> List1 Transition -> String
+    generateFetchLists pre name defaultMiddleware states transitions
+      = let filteredStates = liftListStates states transitions
+            listCode = map (generateFetchList pre name defaultMiddleware "" "\"tenant:\" & $tenant") filteredStates
+            pairs = liftListStatesOfParticipants states transitions
+            listCodeOfParticipant = map (\(s, p) => generateFetchList pre name defaultMiddleware ("-of-" ++ p) ("\"tenant:\" & $tenant & \"#" ++ p ++ ":\" & $domain") s) pairs in
+            List.join "\n\n" (listCode ++ listCodeOfParticipant)
       where
         generateFetchList : String -> String -> String -> String -> String -> State -> String
         generateFetchList pre name defaultMiddleware funPostfix cachePostfix (MkState n _ _ ms)
           = let mw = middleware defaultMiddleware ms
                 path = "/" ++ name ++ "/" ++ n
                 nimname = toNimName name in
-                join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName n) ++ "_" ++ nimname ++ "_list" ++ funPostfix ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
+                join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName (n ++ "-" ++ nimname ++ "-list" ++ funPostfix)) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                                  , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and (request.path.get(\"\") == \"" ++ path ++ "\" or request.path.get(\"\").startsWith(\"" ++ path ++ "?\")):"
                                                  , (indent (indentDelta * 2)) ++ "let"
                                                  , (indent (indentDelta * 3)) ++ "params   = request.params"
                                                  , (indent (indentDelta * 3)) ++ "offset   = parseInt(params.getOrDefault(\"offset\", \"0\"))"
                                                  , (indent (indentDelta * 3)) ++ "limit    = parseInt(params.getOrDefault(\"limit\", \"10\"))"
                                                  , (indent (indentDelta * 3)) ++ "signbody = @[\"limit=\" & $limit, \"offset=\" & $offset].join(\"&\")"
-                                                 , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"GET|" ++ path ++ "|\" & signbody, \"" ++ name ++ ":get-" ++ n ++ "-list" ++ "\"):"
+                                                 , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"GET|" ++ path ++ "|\" & signbody, \"" ++ name ++ ":get-" ++ n ++ "-list" ++ funPostfix ++ "\"):"
                                                  , (indent (indentDelta * 3)) ++ "let"
                                                  , (indent (indentDelta * 4)) ++ "srckey = " ++ cachePostfix ++ " & \"#" ++ name ++ "." ++ n ++ "\""
                                                  , (indent (indentDelta * 4)) ++ "total  = await ctx.cache_redis.zcard(srckey)"
@@ -343,31 +397,17 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                  , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                                                  ]
 
-        generateFetchListOfParticipant' : String -> String -> String -> State -> List Action -> String
-        generateFetchListOfParticipant' pre name defaultMiddleware state as
-          = let participants = map (fromMaybe "") $ filter isJust $ map liftParticipantFromOutputAction as in
-                List.join "\n\n" $ nub $ map (\p => generateFetchList pre name defaultMiddleware ("_of_" ++ p) ("\"tenant:\" & $tenant & \"#" ++ p ++ ":\" & $domain") state) participants
-
-        generateFetchListOfParticipant : String -> String -> String -> State -> String
-        generateFetchListOfParticipant pre name dmw state@(MkState _ (Just enas) (Just exas) _) = generateFetchListOfParticipant' pre name dmw state (enas ++ exas)
-        generateFetchListOfParticipant pre name dmw state@(MkState _ Nothing     (Just exas) _) = generateFetchListOfParticipant' pre name dmw state exas
-        generateFetchListOfParticipant pre name dmw state@(MkState _ (Just enas) Nothing     _) = generateFetchListOfParticipant' pre name dmw state enas
-        generateFetchListOfParticipant pre name dmw state@(MkState _ Nothing     Nothing     _) = ""
-
-    generateFetchListsByReferences : String -> String -> String -> List1 State -> List Parameter -> String
-    generateFetchListsByReferences pre name defaultMiddleware states manyToOneFields
-      = List.join "\n\n" $ map (generateFetchListsByReference pre name defaultMiddleware states) manyToOneFields
+    generateFetchListsByReferences : String -> String -> String -> List1 State -> List1 Transition -> List Parameter -> String
+    generateFetchListsByReferences pre name defaultMiddleware states transitions manyToOneFields
+      = List.join "\n\n" $ map (generateFetchListsByReference pre name defaultMiddleware states transitions) manyToOneFields
       where
-        generateFetchListByReference : String -> String -> String -> Parameter -> String -> String -> State -> String
-        generateFetchListByReference pre name defaultMiddleware (fname, _, metas) funPostfix cachePostfix (MkState sname _ _ ms)
+        generateFetchListByReference : String -> String -> String -> String -> String -> String -> State -> String
+        generateFetchListByReference pre name defaultMiddleware refname funPostfix cachePostfix (MkState sname _ _ ms)
           = let mw = middleware defaultMiddleware ms
-                refname = case lookup "reference" metas of
-                               Just (MVString refname') => refname'
-                               _ => fname
                 nimname = toNimName name
                 matchString = "^\/" ++ refname ++ "\/([0-9]+)\/" ++ name ++ "\/" ++ sname ++ ".*$"
                 query = "/" ++ refname ++ "/$2/" ++ name ++ "/" ++ sname in
-                join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName sname) ++ "_" ++ nimname ++ "_list" ++ funPostfix ++ "_by_" ++ (toNimName refname) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
+                join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName (sname ++ "-" ++ name ++ "-list" ++ funPostfix ++ "-by-" ++ refname)) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
                                                  , (indent indentDelta) ++ "var matches: array[1, string]"
                                                  , (indent indentDelta) ++ "if request.httpMethod.get(HttpGet) == HttpGet and match(request.path.get(\"\"), re\"" ++ matchString ++ "\", matches):"
                                                  , (indent (indentDelta * 2)) ++ "let"
@@ -376,7 +416,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                  , (indent (indentDelta * 3)) ++ "offset   = parseInt(params.getOrDefault(\"offset\", \"0\"))"
                                                  , (indent (indentDelta * 3)) ++ "limit    = parseInt(params.getOrDefault(\"limit\", \"10\"))"
                                                  , (indent (indentDelta * 3)) ++ "signbody = @[\"limit=\" & $limit, \"offset=\" & $offset].join(\"&\")"
-                                                 , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"GET|" ++ query ++ "|$1\" % [signbody, rid], \"" ++ name ++ ":get-" ++ sname ++ "-list-by-" ++ refname ++ "\"):"
+                                                 , (indent (indentDelta * 2)) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"GET|" ++ query ++ "|$1\" % [signbody, rid], \"" ++ name ++ ":get-" ++ sname ++ "-list-by-" ++ refname ++ funPostfix ++ "\"):"
                                                  , (indent (indentDelta * 3)) ++ "let"
                                                  , (indent (indentDelta * 4)) ++ "srckey = " ++ cachePostfix ++ " & \"#" ++ refname ++ ":\" & rid & \"#" ++ name ++ "." ++ sname ++ "\""
                                                  , (indent (indentDelta * 4)) ++ "total  = await ctx.cache_redis.zcard(srckey)"
@@ -405,25 +445,16 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                  , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                                                  ]
 
-        generateFetchListOfParticipantByReference' : String -> String -> String -> Parameter ->  State -> List Action -> String
-        generateFetchListOfParticipantByReference' pre name defaultMiddleware field state as
-          = let participants = map (fromMaybe "") $ filter isJust $ map liftParticipantFromOutputAction as in
-                List.join "\n\n" $ nub $ map (\p => generateFetchListByReference pre name defaultMiddleware field ("_of_" ++ p) ("\"tenant:\" & $tenant & \"#" ++ p ++ ":\" & $session") state) participants
-
-        generateFetchListOfParticipantByReference : String -> String -> String -> Parameter -> State -> String
-        generateFetchListOfParticipantByReference pre name dmw field state@(MkState _ (Just enas) (Just exas) _) = generateFetchListOfParticipantByReference' pre name dmw field state (enas ++ exas)
-        generateFetchListOfParticipantByReference pre name dmw field state@(MkState _ Nothing     (Just exas) _) = generateFetchListOfParticipantByReference' pre name dmw field state exas
-        generateFetchListOfParticipantByReference pre name dmw field state@(MkState _ (Just enas) Nothing     _) = generateFetchListOfParticipantByReference' pre name dmw field state enas
-        generateFetchListOfParticipantByReference pre name dmw field state@(MkState _ Nothing     Nothing     _) = ""
-
-        generateFetchListsByReference : String -> String -> String -> List1 State -> Parameter -> String
-        generateFetchListsByReference pre name defaultMiddleware states field
-          = let normalCode = List1.join "\n\n" $ map (generateFetchListByReference pre name defaultMiddleware field "" "\"tenant:\" & $tenant") states
-                participantStates = filter listStateForParticipantFilter states
-                participantCode = List.join "\n\n" $ map (generateFetchListOfParticipantByReference pre name defaultMiddleware field) participantStates in
-                List.join "\n\n" [ normalCode
-                                 , participantCode
-                                 ]
+        generateFetchListsByReference : String -> String -> String -> List1 State -> List1 Transition -> Parameter -> String
+        generateFetchListsByReference pre name defaultMiddleware states transitions (fname, _, metas)
+          = let refname = case lookup "reference" metas of
+                               Just (MVString refname') => refname'
+                               _ => fname
+                filteredStates = liftListStates states transitions
+                listCode = map (generateFetchListByReference pre name defaultMiddleware refname "" "\"tenant:\" & $tenant") filteredStates
+                pairs = liftListStatesOfParticipants states transitions
+                listCodeOfParticipant = map (\(s, p) => generateFetchListByReference pre name defaultMiddleware refname ("-of-" ++ p) ("\"tenant:\" & $tenant & \"#" ++ p ++ ":\" & $session") s) pairs in
+                List.join "\n\n" (listCode ++ listCodeOfParticipant)
 
     generateDereferenceRecordFromJsons : String -> String -> List Tipe -> String
     generateDereferenceRecordFromJsons pre name ts
@@ -695,48 +726,61 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                            , (indent (indentDelta * 2)) ++ "result = none(ResponseData)"
                            ]
 
-    generateStateSearchs : String -> String -> String -> List1 State -> String
-    generateStateSearchs pre name middleware states
-      = let actions = flatten $ map liftActionsFromState $ List1.toList states
-            indexActions = filter indexOutputActionFilter actions
-            indexStateNames = nub $ filter nonblank $ map ((fromMaybe "") . liftStateNameFromIndexOutputAction) indexActions
-            indexActionsOfParticipant = nub $ filter indexOutputActionOfParticipantFilter actions
-            indexStateNamesOfParticipant = nub $ filter (\(sname, pname) => sname /= "" && pname /= "") $ map (\x => case x of Nothing => ("", ""); Just x' => x') $ map (liftStateNameFromIndexOutputActionOfParticipant) indexActionsOfParticipant
-            normalCode = join "\n\n" $ map (\sname => generateSearch pre name middleware ("-in-" ++ sname ++ "-state") ("/" ++ sname) ("\"state:" ++ sname ++ "&field:\" & key")) indexStateNames
-
-            participantCode = join "\n\n" $ map (\(sname, pname) => generateSearch pre name middleware ("-in-" ++ sname ++ "-state-of-" ++ pname) ("/" ++ sname) ("\"" ++ pname ++ ":\" & $domain & " ++ "\"&state:" ++ sname ++ "&field:\" & key")) indexStateNamesOfParticipant in
-            List.join "\n\n" [ normalCode
-                             , participantCode
-                             ]
+    generateStateSearchs : String -> String -> String -> List1 State -> List1 Transition -> String
+    generateStateSearchs pre name middleware states transitions
+      = let filteredStates = liftIndexStates states transitions
+            indexCode = map (\(MkState sname _ _ _) => generateSearch pre name middleware ("-in-" ++ sname ++ "-state") ("/" ++ sname) ("\"state:" ++ sname ++ "&field:\" & key")) filteredStates
+            pairs = liftIndexStatesOfParticipants states transitions
+            indexCodeOfParticipants = map (\((MkState sname _ _ _), pname) => generateSearch pre name middleware ("-in-" ++ sname ++ "-state-of-" ++ pname) ("/" ++ sname) ("\"" ++ pname ++ ":\" & $domain & " ++ "\"&state:" ++ sname ++ "&field:\" & key")) pairs in
+            List.join "\n\n" (indexCode ++ indexCodeOfParticipants)
 
     generateRouters : String -> String -> List1 State -> List1 Transition -> List1 Participant -> List Parameter -> Bool -> String
     generateRouters pre name ss ts ps fields searchable
       = List1.join "\n\n" $ map (generateRoutersOfParticipant pre name ss ts fields searchable) ps
       where
-        generateStateRouter : Nat -> String -> String -> Participant -> State -> String
-        generateStateRouter idt pre name p@(MkParticipant pname _) s@(MkState sname enas exas smetas)
-          = let actions = liftActionsFromState s
-                listActionsOfParticipant = filter listOutputActionOfParticipantFilter actions
-                participants = filter nonblank $ nub $ map (fromMaybe "") $ filter isJust $ map liftParticipantFromOutputAction listActionsOfParticipant
-                listActions = filter listOutputActionFilter actions in
-                if elem pname participants
-                   then (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName sname) ++ "_" ++ (toNimName name) ++ "_list_of_" ++ (toNimName pname) ++ ")"
-                   else (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName sname) ++ "_" ++ (toNimName name) ++ "_list)"
+        generateListRouters : Nat -> String -> String -> List1 State -> List1 Transition -> List String
+        generateListRouters idt pre name states transitions
+          = let filteredStates = liftListStates states transitions in
+                map (generateListRouter idt pre name) filteredStates
+          where
+            generateListRouter : Nat -> String -> String -> State -> String
+            generateListRouter idt pre name (MkState sname _ _ _)
+              = (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName (name ++ ".get-" ++ sname ++ "-" ++ name ++ "-list")) ++ ")"
 
-        generateStateRouterByReference : Nat -> String -> String -> Participant -> Parameter  -> State -> String
-        generateStateRouterByReference idt pre name (MkParticipant pname _) (fname, _, metas) s@(MkState sname enas exas smetas)
-          = let actions = liftActionsFromState s
-                refname = case lookup "reference" metas of
+        generateListRoutersOfParticipant : Nat -> String -> String -> List1 State -> List1 Transition -> Participant -> List String
+        generateListRoutersOfParticipant idt pre name states transitions (MkParticipant pname _)
+          = let pairs = liftListStatesOfParticipants states transitions
+                filtered = map (\(s, _) => s) $ filter (\(s, p) => p == pname) pairs in
+                map (generateListRouterOfParticipant idt pre name pname) filtered
+          where
+            generateListRouterOfParticipant : Nat -> String -> String -> String -> State -> String
+            generateListRouterOfParticipant idt pre name pname (MkState sname _ _ _)
+              = (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName (name ++ ".get-" ++ sname ++ "-" ++ name ++ "-list-of-" ++ pname)) ++ ")"
+
+        generateListRoutersByReference : Nat -> String -> String -> Parameter -> List1 State -> List1 Transition -> List String
+        generateListRoutersByReference idt pre name (fname, _, metas) states transitions
+          = let refname = case lookup "reference" metas of
                                Just (MVString refname') => refname'
                                _ => fname
-                listActionsOfParticipant = filter listOutputActionOfParticipantFilter actions
-                participants = filter nonblank $ nub $ map (fromMaybe "") $ filter isJust $ map liftParticipantFromOutputAction listActionsOfParticipant
-                listActions = filter listOutputActionFilter actions in
-                if elem pname participants
-                   then (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName sname) ++ "_" ++ (toNimName name) ++ "_list_of_" ++ (toNimName pname) ++ "_by_" ++ (toNimName refname) ++ ")"
-                   else if length listActions > 0
-                           then (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName sname) ++ "_" ++ (toNimName name) ++ "_list_by_" ++ (toNimName refname) ++ ")"
-                           else ""
+                filteredStates = liftListStates states transitions in
+                map (generateListRouter idt pre name refname) filteredStates
+          where
+            generateListRouter : Nat -> String -> String -> String -> State -> String
+            generateListRouter idt pre name refname (MkState sname _ _ _)
+              = (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName (name ++ ".get-" ++ sname ++ "-" ++ name ++ "-list-by-" ++ refname)) ++ ")"
+
+        generateListRoutersOfParticipantByReference : Nat -> String -> String -> Parameter -> List1 State -> List1 Transition -> Participant -> List String
+        generateListRoutersOfParticipantByReference idt pre name (fname, _, metas) states transitions (MkParticipant pname _)
+          = let refname = case lookup "reference" metas of
+                               Just (MVString refname') => refname'
+                               _ => fname
+                pairs = liftListStatesOfParticipants states transitions
+                filtered = map (\(s, _) => s) $ filter (\(s, p) => p == pname) pairs in
+                map (generateListRouterOfParticipant idt pre name refname pname) filtered
+          where
+            generateListRouterOfParticipant : Nat -> String -> String -> String -> String -> State -> String
+            generateListRouterOfParticipant idt pre name refname pname (MkState sname _ _ _)
+              = (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName (name ++ ".get-" ++ sname ++ "-" ++ name ++ "-list-of-" ++ pname ++ "-by-" ++ refname)) ++ ")"
 
         generateEventRoutersByParticipantAndTransition : Nat -> String -> Participant -> Transition -> List String
         generateEventRoutersByParticipantAndTransition idt name p (MkTransition _ _ ts)
@@ -748,27 +792,50 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                    then (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ "." ++ (toNimName (Event.name e)) ++ ")"
                    else ""
 
-        generateStateSearchRouter : Nat -> String -> String -> Participant -> State -> String
-        generateStateSearchRouter idt pre name p@(MkParticipant pname _) s@(MkState sname enas exas smetas)
-          = let actions = liftActionsFromState s
-                indexActionsOfParticipant = nub $ filter indexOutputActionOfParticipantFilter actions
-                participants = filter nonblank $ nub $ map ((fromMaybe "") . liftParticipantFromOutputAction) indexActionsOfParticipant
-                indexActions = filter indexOutputActionFilter actions in
-                if elem pname participants
-                   then (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".search_" ++ (toNimName (name ++ "-in-" ++ sname ++ "-state-of-" ++ pname)) ++ ")"
-                   else if length indexActions > 0
-                           then (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".search_" ++ (toNimName (name ++ "-in-" ++ sname ++ "-state")) ++ ")"
-                           else ""
+        generateIndexRouters : Nat -> String -> String -> List1 State -> List1 Transition -> List String
+        generateIndexRouters idt pre name states transitions
+          = let filteredStates = liftIndexStates states transitions in
+                map (generateIndexRouter idt pre name) filteredStates
+          where
+            generateIndexRouter : Nat -> String -> String -> State -> String
+            generateIndexRouter idt pre name (MkState sname _ _ _)
+              = (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName (name ++ ".search-" ++ name ++ "-in-" ++ sname ++ "-state")) ++ ")"
+
+        generateIndexRoutersOfParticipant : Nat -> String -> String -> List1 State -> List1 Transition -> Participant -> List String
+        generateIndexRoutersOfParticipant idt pre name states transitions (MkParticipant pname _)
+          = let pairs = liftIndexStatesOfParticipants states transitions
+                filtered = map (\(s, _) => s) $ filter (\(s, p) => p == pname) pairs in
+                map (generateIndexRouterOfParticipant idt pre name pname) filtered
+          where
+            generateIndexRouterOfParticipant : Nat -> String -> String -> String -> State -> String
+            generateIndexRouterOfParticipant idt pre name pname (MkState sname _ _ _)
+              = (indent idt) ++ "RouteProc[GatewayContext](" ++ (toNimName (name ++ ".search-" ++ name ++ "-in-" ++ sname ++ "-state-of-" ++ pname)) ++ ")"
 
         generateRoutersOfParticipant : String -> String -> List1 State -> List1 Transition -> List Parameter -> Bool -> Participant -> String
         generateRoutersOfParticipant pre name ss ts fields searchable p@(MkParticipant n _)
           = let eventRouters = nub $ flatten $ List1.toList $ map (generateEventRoutersByParticipantAndTransition indentDelta name p) ts
-                stateRouters = filter nonblank $ List1.toList $ map (generateStateRouter indentDelta pre name p) ss
-                referencedStateRouters = filter nonblank $ flatten $ map (\field => map (generateStateRouterByReference indentDelta pre name p field) (List1.toList ss)) fields
+                listRouters = generateListRouters indentDelta pre name ss ts
+                listRoutersOfParticipant = generateListRoutersOfParticipant indentDelta pre name ss ts p
+                referencedListRouters = flatten $ map (\field => generateListRoutersByReference indentDelta pre name field ss ts) fields
+                referencedListRoutersOfParticipant = flatten $ map (\field => generateListRoutersOfParticipantByReference indentDelta pre name field ss ts p) fields
                 getObjRouter = (indent indentDelta) ++ "RouteProc[GatewayContext](" ++ (toNimName name) ++ ".get_" ++ (toNimName name) ++ ")"
-                searchStateRouters = filter nonblank $ List1.toList $ map (generateStateSearchRouter indentDelta pre name p) ss in
+                indexRouters = generateIndexRouters indentDelta pre name ss ts
+                indexRoutersOfParticipant = generateIndexRoutersOfParticipant indentDelta pre name ss ts p in
                 List.join "\n" [ "let " ++ (toNimName n) ++ "_routers*: seq[RouteProc[GatewayContext]] = @["
-                               , List.join ",\n" (eventRouters ++ stateRouters ++ referencedStateRouters ++ [getObjRouter] ++ (if searchable then searchStateRouters else []))
+                               , List.join ",\n" ( eventRouters
+                                                 ++ (if length listRoutersOfParticipant > 0
+                                                        then listRoutersOfParticipant
+                                                        else listRouters)
+                                                 ++ (if length referencedListRoutersOfParticipant > 0
+                                                        then referencedListRoutersOfParticipant
+                                                        else referencedListRouters)
+                                                 ++ [getObjRouter]
+                                                 ++ (if searchable
+                                                        then (if length indexRoutersOfParticipant > 0
+                                                                 then indexRoutersOfParticipant
+                                                                 else indexRouters)
+                                                        else [])
+                                                 )
                                , "]"
                                ]
 
@@ -786,53 +853,92 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                    then (indent idt) ++ "(\"" ++ (displayName ename metas) ++ "\", " ++ (show (name ++ ":" ++ ename)) ++ ")"
                    else ""
 
-        generateListPermission : Nat -> String -> String -> Participant -> State -> String
-        generateListPermission idt pre name p@(MkParticipant pname _) s@(MkState sname enas exas smetas)
-          = let actions = liftActionsFromState s
-                listActionsOfParticipant = filter listOutputActionOfParticipantFilter actions
-                participants = filter nonblank $ nub $ map (fromMaybe "") $ filter isJust $ map liftParticipantFromOutputAction listActionsOfParticipant
-                listActions = filter listOutputActionFilter actions in
-                if elem pname participants
-                   then (indent idt) ++ "(\"" ++ "获取" ++ (displayName sname smetas) ++ "列表" ++ "\", " ++ (show (name ++ ":get-" ++ sname ++ "-list")) ++ ")"
-                   else if length listActions > 0
-                           then (indent idt) ++ "(\"" ++ "获取" ++ (displayName sname smetas) ++ "列表" ++ "\", " ++ (show (name ++ ":get-" ++ sname ++ "-list")) ++ ")"
-                           else ""
+        generateListPermissions : Nat -> String -> String -> List1 State -> List1 Transition -> List String
+        generateListPermissions idt pre name states transitions
+          = let filteredStates = liftListStates states transitions in
+                map (generateListPermission idt pre name) filteredStates
+          where
+            generateListPermission : Nat -> String -> String -> State -> String
+            generateListPermission idt pre name (MkState sname _ _ smetas)
+              = (indent idt) ++ "(\"" ++ "获取" ++ (displayName sname smetas) ++ "列表" ++ "\", " ++ (show (name ++ ":get-" ++ sname ++ "-list")) ++ ")"
 
-        generateListPermissionByReference : Nat -> String -> String -> Participant -> Parameter -> State -> String
-        generateListPermissionByReference idt pre name (MkParticipant pname _) (fname, _, fmetas) s@(MkState sname enas exas smetas)
-          = let actions = liftActionsFromState s
-                refname = case lookup "reference" fmetas of
+        generateListPermissionsOfParticipant : Nat -> String -> String -> List1 State -> List1 Transition -> Participant -> List String
+        generateListPermissionsOfParticipant idt pre name states transitions (MkParticipant pname _)
+          = let pairs = liftListStatesOfParticipants states transitions
+                filtered = map (\(s, _) => s) $ filter (\(s, p) => p == pname) pairs in
+                map (generateListPermissionOfParticipant idt pre name pname) filtered
+          where
+            generateListPermissionOfParticipant : Nat -> String -> String -> String -> State -> String
+            generateListPermissionOfParticipant idt pre name pname (MkState sname _ _ smetas)
+              = (indent idt) ++ "(\"" ++ "获取" ++ (displayName sname smetas) ++ "列表" ++ "\", " ++ (show (name ++ ":get-" ++ sname ++ "-list-of-" ++ pname)) ++ ")"
+
+        generateListPermissionsByReference : Nat -> String -> String -> Parameter -> List1 State -> List1 Transition -> List String
+        generateListPermissionsByReference idt pre name (fname, _, metas) states transitions
+          = let refname = case lookup "reference" metas of
                                Just (MVString refname') => refname'
                                _ => fname
-                listActionsOfParticipant = filter listOutputActionOfParticipantFilter actions
-                participants = filter nonblank $ nub $ map (fromMaybe "") $ filter isJust $ map liftParticipantFromOutputAction listActionsOfParticipant
-                listActions = filter listOutputActionFilter actions in
-                if elem pname participants
-                   then (indent idt) ++ "(\"根据" ++ (displayName refname fmetas) ++ "获取" ++ (displayName sname smetas) ++ "列表" ++ "\", " ++ (show (name ++ ":get-" ++ sname ++ "-list-by-" ++ refname)) ++ ")"
-                   else if length listActions > 0
-                           then (indent idt) ++ "(\"根据" ++ (displayName refname fmetas) ++ "获取" ++ (displayName sname smetas) ++ "列表" ++ "\", " ++ (show (name ++ ":get-" ++ sname ++ "-list-by-" ++ refname)) ++ ")"
-                           else ""
+                filteredStates = liftListStates states transitions in
+                map (generateListPermission idt pre name refname metas) filteredStates
+          where
+            generateListPermission : Nat -> String -> String -> String -> Maybe (List Meta) -> State -> String
+            generateListPermission idt pre name refname fmetas (MkState sname _ _ smetas)
+              = (indent idt) ++ "(\"根据" ++ (displayName refname fmetas) ++ "获取" ++ (displayName sname smetas) ++ "列表" ++ "\", " ++ (show (name ++ ":get-" ++ sname ++ "-list-by-" ++ refname)) ++ ")"
 
-        generateStateSearchPermission : Nat -> String -> String -> Participant -> State -> String
-        generateStateSearchPermission idt pre name (MkParticipant pname _) s@(MkState sname enas exas smetas)
-          = let actions = liftActionsFromState s
-                indexActionsOfParticipant = filter indexOutputActionOfParticipantFilter actions
-                participants = filter nonblank $ nub $ map (fromMaybe "") $ filter isJust $ map liftParticipantFromOutputAction indexActionsOfParticipant
-                indexActions = filter indexOutputActionFilter actions in
-                if elem pname participants
-                   then (indent idt) ++ "(\"在" ++ (displayName sname smetas) ++ "列表中搜索\", " ++ (show (name ++ ":search-" ++ name ++ "-in-" ++ sname ++ "-of-" ++ pname)) ++ ")"
-                   else if length indexActions > 0
-                           then (indent idt) ++ "(\"在" ++ (displayName sname smetas) ++ "列表中搜索\", " ++ (show (name ++ ":search-" ++ name ++ "-in-" ++ sname)) ++ ")"
-                           else ""
+        generateListPermissionsOfParticipantByReference : Nat -> String -> String -> Parameter -> List1 State -> List1 Transition -> Participant -> List String
+        generateListPermissionsOfParticipantByReference idt pre name (fname, _, metas) states transitions (MkParticipant pname _)
+          = let refname = case lookup "reference" metas of
+                               Just (MVString refname') => refname'
+                               _ => fname
+                pairs = liftListStatesOfParticipants states transitions
+                filtered = map (\(s, _) => s) $ filter (\(s, p) => p == pname) pairs in
+                map (generateListPermissionOfParticipant idt pre name refname metas pname) filtered
+          where
+            generateListPermissionOfParticipant : Nat -> String -> String -> String -> Maybe (List Meta) -> String -> State -> String
+            generateListPermissionOfParticipant idt pre name refname fmetas pname (MkState sname _ _ smetas)
+              = (indent idt) ++ "(\"根据" ++ (displayName refname fmetas) ++ "获取" ++ (displayName sname smetas) ++ "列表" ++ "\", " ++ (show (name ++ ":get-" ++ sname ++ "-list-of-" ++ pname ++ "-by-" ++ refname)) ++ ")"
+
+        generateIndexPermissions : Nat -> String -> String -> List1 State -> List1 Transition -> List String
+        generateIndexPermissions idt pre name states transitions
+          = let filteredStates = liftIndexStates states transitions in
+                map (generateIndexPermission idt pre name) filteredStates
+          where
+            generateIndexPermission : Nat -> String -> String -> State -> String
+            generateIndexPermission idt pre name (MkState sname _ _ smetas)
+              = (indent idt) ++ "(\"在" ++ (displayName sname smetas) ++ "列表中搜索\", " ++ (show (name ++ ":search-" ++ name ++ "-in-" ++ sname)) ++ ")"
+
+        generateIndexPermissionsOfParticipant : Nat -> String -> String -> List1 State -> List1 Transition -> Participant -> List String
+        generateIndexPermissionsOfParticipant idt pre name states transitions (MkParticipant pname _)
+          = let pairs = liftIndexStatesOfParticipants states transitions
+                filtered = map (\(s, _) => s) $ filter (\(s, p) => p == pname) pairs in
+                map (generateIndexPermissionOfParticipant idt pre name pname) filtered
+          where
+            generateIndexPermissionOfParticipant : Nat -> String -> String -> String -> State -> String
+            generateIndexPermissionOfParticipant idt pre name pname (MkState sname _ _ smetas)
+              = (indent idt) ++ "(\"在" ++ (displayName sname smetas) ++ "列表中搜索\", " ++ (show (name ++ ":search-" ++ name ++ "-in-" ++ sname ++ "-of-" ++ pname)) ++ ")"
 
         generatePermissionsOfParticipant : String -> String -> List1 State -> List1 Transition -> List Parameter -> Participant -> String
         generatePermissionsOfParticipant pre name ss ts fields p@(MkParticipant n _)
           = let eventPermissions = nub $ flatten $ List1.toList $ map (generateEventPermissions indentDelta name p) ts
-                listPermissions = filter nonblank $ List1.toList $ map (generateListPermission indentDelta pre name p) ss
-                referencedStatePermissions = filter nonblank $ flatten $ map (\field => map (generateListPermissionByReference indentDelta pre name p field) (List1.toList ss)) fields
-                searchStatePermissions = filter nonblank $ List1.toList $ map (generateStateSearchPermission indentDelta pre name p) ss in
+                listPermissions = generateListPermissions indentDelta pre name ss ts
+                listPermissionsOfParticipant = generateListPermissionsOfParticipant indentDelta pre name ss ts p
+                referencedListPermissions = flatten $ map (\field => generateListPermissionsByReference indentDelta pre name field ss ts) fields
+                referencedListPermissionsOfParticipant = flatten $ map (\field => generateListPermissionsOfParticipantByReference indentDelta pre name field ss ts p) fields
+                indexPermissions = generateIndexPermissions indentDelta pre name ss ts
+                indexPermissionsOfParticipant = generateIndexPermissionsOfParticipant indentDelta pre name ss ts p in
                 List.join "\n" [ "let " ++ (toNimName n) ++ "_permissions*: seq[(string, string)] = @["
-                               , List.join ",\n" (eventPermissions ++ listPermissions ++ referencedStatePermissions ++ (if searchable then searchStatePermissions else []))
+                               , List.join ",\n" ( eventPermissions
+                                                 ++ (if length listPermissionsOfParticipant > 0
+                                                        then listPermissionsOfParticipant
+                                                        else listPermissions)
+                                                 ++ (if length referencedListPermissionsOfParticipant > 0
+                                                        then referencedListPermissionsOfParticipant
+                                                        else referencedListPermissions)
+                                                 ++ (if searchable
+                                                        then (if length indexPermissionsOfParticipant > 0
+                                                                 then indexPermissionsOfParticipant
+                                                                 else indexPermissions)
+                                                        else [])
+                                                 )
                                , "]"
                                ]
 
