@@ -138,6 +138,9 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
             generateGetEventArgument idt (n, (TDict k v), _)         = let lhs = (indent idt) ++ (toNimName n)
                                                                            rhs = "data{\"" ++ n ++ "\"}" in
                                                                            lhs ++ " = " ++ rhs
+            generateGetEventArgument idt (n, (TRecord _ _), _)       = let lhs = (indent idt) ++ (toNimName n)
+                                                                           rhs = "data{\"" ++ n ++ "\"}" in
+                                                                           lhs ++ " = " ++ rhs
             generateGetEventArgument idt (n, t, _)                   = let lhs = (indent idt) ++ (toNimName n)
                                                                            rhs = toNimFromJson ("data{\"" ++ n ++ "\"}") t in
                                                                            lhs ++ " = " ++ rhs
@@ -460,6 +463,10 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
           = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
                            , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, val.get.parseJson)"
                            ]
+        generateGetJsonHandler idt n (TRecord _ _)
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, val.get.parseJson)"
+                           ]
         generateGetJsonHandler idt n (TPrimType PTLong)
           = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
                            , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, % " ++ "val.get(\"0\"))"
@@ -532,6 +539,10 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
         generateDefaultGetJsonHandler idt n t@(TDict _ _)
           = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
                            , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, json.`%` " ++ (defaultValue t) ++ ")"
+                           ]
+        generateDefaultGetJsonHandler idt n (TRecord _ _)
+          = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
+                           , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, newJNull())"
                            ]
         generateDefaultGetJsonHandler idt n t
           = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
