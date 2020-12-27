@@ -168,26 +168,32 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
 
             generateMainBody : Nat -> String -> String -> FsmIdStyle -> String -> List Parameter -> String
             generateMainBody idt fsmidcode n fsmIdStyle mw ps
-              = let isInSession = isInfixOf "session" mw in
-                    List.join "\n" $ List.filter nonblank [ (indent idt) ++ "let"
-                                                          , (indent (idt + (indentDelta * 1))) ++ "callback = $rand(uint64)"
-                                                          , (indent (idt + (indentDelta * 1))) ++ "fsmid = " ++ if fsmIdStyle == FsmIdStyleUrl then "id.parseBiggestUInt" else (if fsmIdStyle == FsmIdStyleSession then "session" else fsmidcode)
+              = let isInSession = isInfixOf "session" mw
+                    idCode = case fsmIdStyle of
+                                  FsmIdStyleUrl => "id.parseBiggestUInt"
+                                  FsmIdStyleSession => "session"
+                                  FsmIdStyleDomain => "domain"
+                                  _ => fsmidcode
+                    in
+                    join "\n" $ List.filter nonblank [ (indent idt) ++ "let"
+                                                     , (indent (idt + (indentDelta * 1))) ++ "callback = $rand(uint64)"
+                                                     , (indent (idt + (indentDelta * 1))) ++ "fsmid = " ++ idCode
 
-                                                          , (indent (idt + (indentDelta * 1))) ++ "args = {"
-                                                          , (indent (idt + (indentDelta * 2))) ++ "\"TENANT\": $tenant,"
-                                                          , (indent (idt + (indentDelta * 2))) ++ "\"DOMAIN\": $domain,"
-                                                          , (indent (idt + (indentDelta * 2))) ++ "\"GATEWAY\": ctx.gateway,"
-                                                          , (indent (idt + (indentDelta * 2))) ++ "\"TASK\": \"PLAY-EVENT\","
-                                                          , (indent (idt + (indentDelta * 2))) ++ "\"FSMID\": $fsmid,"
-                                                          , (indent (idt + (indentDelta * 2))) ++ "\"EVENT\": " ++ (show (toUpper n)) ++ ","
-                                                          , (indent (idt + (indentDelta * 2))) ++ "\"CALLBACK\": callback,"
-                                                          , (indent (idt + (indentDelta * 2))) ++ "\"OCCURRED-AT\": $to_mytimestamp(now()),"
-                                                          , if isInSession then (indent (idt + (indentDelta * 2))) ++ "\"TRIGGER\": $session," else ""
-                                                          , if length ps > 0 then (indent (idt + (indentDelta * 2))) ++ "\"PAYLOAD\": $data," else ""
-                                                          , (indent (idt + (indentDelta * 1))) ++ "}"
-                                                          , (indent idt) ++ "discard await ctx.queue_redis.xadd(queue, @args)"
-                                                          , (indent idt) ++ "result = await check_result(ctx.cache_redis, tenant, callback, 0)"
-                                                          ]
+                                                     , (indent (idt + (indentDelta * 1))) ++ "args = {"
+                                                     , (indent (idt + (indentDelta * 2))) ++ "\"TENANT\": $tenant,"
+                                                     , (indent (idt + (indentDelta * 2))) ++ "\"DOMAIN\": $domain,"
+                                                     , (indent (idt + (indentDelta * 2))) ++ "\"GATEWAY\": ctx.gateway,"
+                                                     , (indent (idt + (indentDelta * 2))) ++ "\"TASK\": \"PLAY-EVENT\","
+                                                     , (indent (idt + (indentDelta * 2))) ++ "\"FSMID\": $fsmid,"
+                                                     , (indent (idt + (indentDelta * 2))) ++ "\"EVENT\": " ++ (show (toUpper n)) ++ ","
+                                                     , (indent (idt + (indentDelta * 2))) ++ "\"CALLBACK\": callback,"
+                                                     , (indent (idt + (indentDelta * 2))) ++ "\"OCCURRED-AT\": $to_mytimestamp(now()),"
+                                                     , if isInSession then (indent (idt + (indentDelta * 2))) ++ "\"TRIGGER\": $session," else ""
+                                                     , if length ps > 0 then (indent (idt + (indentDelta * 2))) ++ "\"PAYLOAD\": $data," else ""
+                                                     , (indent (idt + (indentDelta * 1))) ++ "}"
+                                                     , (indent idt) ++ "discard await ctx.queue_redis.xadd(queue, @args)"
+                                                     , (indent idt) ++ "result = await check_result(ctx.cache_redis, tenant, callback, 0)"
+                                                     ]
 
             generateMiddleware : Nat -> String -> String -> String -> FsmIdStyle -> String -> List Parameter -> String
             generateMiddleware idt name fsmidcode ename fsmIdStyle mw ps
@@ -209,9 +215,10 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                              , (indent (indentDelta * 2)) ++ "let"
                                              , if fsmIdStyle == FsmIdStyleUrl then (indent (indentDelta * 3)) ++ "id = matches[0]" else ""
                                              , (indent (indentDelta * 3)) ++ "signbody = \"\""
-                                             , (indent (indentDelta * 2)) ++ if fsmIdStyle == FsmIdStyleSession then ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "|\" & signbody, \"\"):") else ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "/$2|$1\" % [signbody, id], \"\"):")
+                                             , (indent (indentDelta * 2)) ++ if fsmIdStyle == FsmIdStyleSession || fsmIdStyle == FsmIdStyleDomain then ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "|\" & signbody, \"\"):") else ("check_signature_security_session(request, ctx, \"GET|/" ++ name ++ "/$2|$1\" % [signbody, id], \"\"):")
                                              , (indent (indentDelta * 3)) ++ "let"
                                              , if fsmIdStyle == FsmIdStyleSession then (indent (indentDelta * 4)) ++ "id = $session" else ""
+                                             , if fsmIdStyle == FsmIdStyleDomain then (indent (indentDelta * 4)) ++ "id = $domain" else ""
                                              , (indent (indentDelta * 4)) ++ "key = \"tenant:\" & $tenant & \"#" ++ name ++ ":\" & id"
                                              , (indent (indentDelta * 4)) ++ "objopt = await get_" ++ (toNimName name) ++ "_json(ctx.cache_redis, tenant, key)"
                                              , (indent (indentDelta * 3)) ++ "if objopt.isSome:"
