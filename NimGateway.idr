@@ -424,14 +424,14 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
           = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
                            , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems: seq[string] = @[]"
                            , (indent (idt + indentDelta)) ++ "for elem in val.get.parseJson:"
-                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems.add(elem.getStr(\"0\").parseBiggestInt)"
+                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems.add(elem.getStr(\"0\"))"
                            , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, %" ++ (toNimName n) ++ "_elems)"
                            ]
         generateGetJsonHandler idt n (TList (TPrimType PTULong))
           = List.join "\n" [ (indent idt) ++ "of " ++ (show (toUpper n)) ++ ":"
                            , (indent (idt + indentDelta)) ++ "var " ++ (toNimName n) ++ "_elems: seq[string] = @[]"
                            , (indent (idt + indentDelta)) ++ "for elem in val.get.parseJson:"
-                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems.add(elem.getStr(\"0\").parseBiggestUInt)"
+                           , (indent (idt + indentDelta * 2)) ++ (toNimName n) ++ "_elems.add(elem.getStr(\"0\"))"
                            , (indent (idt + indentDelta)) ++ "payload.add(fields[idx].toLowerAscii, %" ++ (toNimName n) ++ "_elems)"
                            ]
         generateGetJsonHandler idt n (TList (TRecord rn ps))
