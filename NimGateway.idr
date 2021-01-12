@@ -197,13 +197,14 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
 
             generateMiddleware : Nat -> String -> String -> String -> FsmIdStyle -> String -> List Parameter -> String
             generateMiddleware idt name fsmidcode ename fsmIdStyle mw ps
-              = join "\n" $ List.filter nonblank [ (indent idt) ++ "let"
-                                                 , if fsmIdStyle == FsmIdStyleUrl then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
-                                                 , generateGetEventArguments (idt + indentDelta) ps
-                                                 , generateSignatureBody (idt + indentDelta) ps
-                                                 , (indent idt) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if fsmIdStyle == FsmIdStyleUrl then [name, "$2", ename] else [name, ename])) ++ (if fsmIdStyle == FsmIdStyleUrl then "|$1\" % [signbody, id], \"" ++ name ++ ":" ++ ename ++ "\"):" else "|\" & signbody, \"" ++ name ++ ":" ++ ename ++ "\"):")
-                                                 , generateMainBody (idt + indentDelta) fsmidcode n fsmIdStyle mw ps
-                                                 ]
+              = let params = filter payloadParameterFilter ps in
+                    join "\n" $ List.filter nonblank [ (indent idt) ++ "let"
+                                                     , if fsmIdStyle == FsmIdStyleUrl then (indent (idt + (indentDelta * 1))) ++ "id = matches[0]" else ""
+                                                     , generateGetEventArguments (idt + indentDelta) params
+                                                     , generateSignatureBody (idt + indentDelta) params
+                                                     , (indent idt) ++ "check_" ++ (toNimName mw) ++ "(request, ctx, \"POST|/" ++  (Data.List.join "/" (if fsmIdStyle == FsmIdStyleUrl then [name, "$2", ename] else [name, ename])) ++ (if fsmIdStyle == FsmIdStyleUrl then "|$1\" % [signbody, id], \"" ++ name ++ ":" ++ ename ++ "\"):" else "|\" & signbody, \"" ++ name ++ ":" ++ ename ++ "\"):")
+                                                     , generateMainBody (idt + indentDelta) fsmidcode n fsmIdStyle mw params
+                                                     ]
 
     generateFetchObject : String -> String -> String -> Fsm -> String
     generateFetchObject pre name defaultMiddleware fsm@(MkFsm _ _ _ _ _ _ metas)
