@@ -37,7 +37,7 @@ middleware defaultValue metas
          _ => defaultValue
 
 toNim : AppConfig -> Fsm -> String
-toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
+toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ _ metas)
   = let name = fsm.name
         pre = camelize (toNimName name)
         display = displayName name metas
@@ -207,7 +207,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
                                                      ]
 
     generateFetchObject : String -> String -> String -> Fsm -> String
-    generateFetchObject pre name defaultMiddleware fsm@(MkFsm _ _ _ _ _ _ metas)
+    generateFetchObject pre name defaultMiddleware fsm@(MkFsm _ _ _ _ _ _ _ metas)
       = let mw = middleware defaultMiddleware metas
             fsmIdStyle = fsmIdStyleOfFsm fsm in
             join "\n" $ List.filter nonblank [ "proc get_" ++ (toNimName name) ++ "*(request: Request, ctx: GatewayContext): Future[Option[ResponseData]] {.async, gcsafe, locks:0.} ="
@@ -628,6 +628,7 @@ toNim conf@(MkAppConfig _ mw) fsm@(MkFsm _ _ _ _ _ _ metas)
             pairs = liftIndexStatesOfParticipants states transitions
             indexCodeOfParticipants = map (\((MkState sname _ _ _), pname) => generateSearch pre name middleware ("-in-" ++ sname ++ "-state-of-" ++ pname) ("/" ++ sname) ("\"" ++ pname ++ ":\" & $domain & " ++ "\"&state:" ++ sname ++ "&field:\" & key")) pairs in
             List.join "\n\n" (indexCode ++ indexCodeOfParticipants)
+
 
     generateRouters : String -> String -> List1 State -> List1 Transition -> List1 Participant -> List Parameter -> Bool -> String
     generateRouters pre name ss ts ps fields searchable
